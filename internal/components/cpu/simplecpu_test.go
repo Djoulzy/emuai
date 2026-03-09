@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Djoulzy/emuAI/internal/components/memory"
-	"github.com/Djoulzy/emuAI/internal/emulator"
+	"github.com/Djoulzy/emuai/internal/components/memory"
+	"github.com/Djoulzy/emuai/internal/emulator"
 )
 
 func TestCPU6502_ProgramFlow(t *testing.T) {

@@ -5,12 +5,12 @@ import (
 	"log"
 	"time"
 
-	"github.com/Djoulzy/emuAI/internal/components/cpu"
-	"github.com/Djoulzy/emuAI/internal/components/memory"
-	"github.com/Djoulzy/emuAI/internal/components/peripheral"
-	"github.com/Djoulzy/emuAI/internal/components/sound"
-	"github.com/Djoulzy/emuAI/internal/components/video"
-	"github.com/Djoulzy/emuAI/internal/emulator"
+	"github.com/Djoulzy/emuai/internal/components/cpu"
+	"github.com/Djoulzy/emuai/internal/components/memory"
+	"github.com/Djoulzy/emuai/internal/components/peripheral"
+	"github.com/Djoulzy/emuai/internal/components/sound"
+	"github.com/Djoulzy/emuai/internal/components/video"
+	"github.com/Djoulzy/emuai/internal/emulator"
 )
 
 func main() {

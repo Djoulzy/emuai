@@ -1,4 +1,4 @@
-# emuAI
+# emuai
 
 Modular 8-bit machine emulator scaffold in Go.
 

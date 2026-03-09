@@ -1,3 +1,3 @@
-module github.com/Djoulzy/emuAI
+module github.com/Djoulzy/emuai
 
 go 1.23.4

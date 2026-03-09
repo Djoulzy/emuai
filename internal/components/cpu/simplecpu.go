@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Djoulzy/emuAI/internal/emulator"
+	"github.com/Djoulzy/emuai/internal/emulator"
 )
 
 const (

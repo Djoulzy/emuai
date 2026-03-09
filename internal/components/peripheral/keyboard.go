@@ -3,7 +3,7 @@ package peripheral
 import (
 	"context"
 
-	"github.com/Djoulzy/emuAI/internal/emulator"
+	"github.com/Djoulzy/emuai/internal/emulator"
 )
 
 type Keyboard struct {

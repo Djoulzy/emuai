@@ -3,7 +3,7 @@ package video
 import (
 	"context"
 
-	"github.com/Djoulzy/emuAI/internal/emulator"
+	"github.com/Djoulzy/emuai/internal/emulator"
 )
 
 type NullVideo struct {
