@@ -13,6 +13,7 @@ const (
 	flagI byte = 1 << 2 // Interrupt disable
 	flagD byte = 1 << 3 // Decimal mode
 	flagB byte = 1 << 4 // Break
+	flagU byte = 1 << 5 // Unused, always set when pushed/restored
 	flagV byte = 1 << 6 // Overflow
 	flagN byte = 1 << 7 // Negative
 )
@@ -40,14 +41,19 @@ type CPU6502 struct {
 	P  byte
 	PC uint16
 
-	halted  bool
-	current *decodedInstruction
-	tmp8    byte
-	tmpAddr uint16
+	halted         bool
+	current        *decodedInstruction
+	tmp8           byte
+	tmpAddr        uint16
+	tmpBase        uint16
+	prefetchOpcode byte
+	hasPrefetch    bool
 }
 
 func NewCPU6502(name string, resetVector uint16) *CPU6502 {
-	return &CPU6502{name: name, resetVector: resetVector}
+	newCPU := &CPU6502{name: name, resetVector: resetVector}
+	newCPU.initLanguage()
+	return newCPU
 }
 
 // Kept for backward compatibility with initial scaffold.
@@ -64,12 +70,15 @@ func (c *CPU6502) Reset(_ context.Context) error {
 	c.X = 0
 	c.Y = 0
 	c.SP = 0xFD
-	c.P = flagI
+	c.P = flagI | flagU
 	c.PC = c.resetVector
 	c.halted = false
 	c.current = nil
 	c.tmp8 = 0
 	c.tmpAddr = 0
+	c.tmpBase = 0
+	c.prefetchOpcode = 0
+	c.hasPrefetch = false
 	return nil
 }
 
@@ -80,9 +89,15 @@ func (c *CPU6502) Tick(_ context.Context, _ emulator.Tick, bus *emulator.Bus) er
 
 	// No current instruction means this cycle is the opcode fetch cycle.
 	if c.current == nil {
-		opcode, err := c.fetchByte(bus)
-		if err != nil {
-			return err
+		opcode := c.prefetchOpcode
+		if c.hasPrefetch {
+			c.hasPrefetch = false
+		} else {
+			var err error
+			opcode, err = c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
 		}
 
 		instr, err := c.decode(opcode)
@@ -124,6 +139,64 @@ func (c *CPU6502) fetchByte(bus *emulator.Bus) (byte, error) {
 	return v, nil
 }
 
+func (c *CPU6502) fetchWord(bus *emulator.Bus) (uint16, error) {
+	lo, err := c.fetchByte(bus)
+	if err != nil {
+		return 0, err
+	}
+	hi, err := c.fetchByte(bus)
+	if err != nil {
+		return 0, err
+	}
+	return uint16(hi)<<8 | uint16(lo), nil
+}
+
+func (c *CPU6502) pushByte(bus *emulator.Bus, v byte) error {
+	if err := bus.Write(0x0100|uint16(c.SP), v); err != nil {
+		return err
+	}
+	c.SP--
+	return nil
+}
+
+func (c *CPU6502) pullByte(bus *emulator.Bus) (byte, error) {
+	c.SP++
+	return bus.Read(0x0100 | uint16(c.SP))
+}
+
+func (c *CPU6502) readZeroPageWord(bus *emulator.Bus, addr byte) (uint16, error) {
+	lo, err := bus.Read(uint16(addr))
+	if err != nil {
+		return 0, err
+	}
+	hi, err := bus.Read(uint16(byte(addr + 1)))
+	if err != nil {
+		return 0, err
+	}
+	return uint16(hi)<<8 | uint16(lo), nil
+}
+
+func (c *CPU6502) dummyReadPC(bus *emulator.Bus) error {
+	_, err := bus.Read(c.PC)
+	return err
+}
+
+func (c *CPU6502) dummyReadStack(bus *emulator.Bus) error {
+	_, err := bus.Read(0x0100 | uint16(c.SP))
+	return err
+}
+
+func (c *CPU6502) prefetch(bus *emulator.Bus, addr uint16) error {
+	opcode, err := bus.Read(addr)
+	if err != nil {
+		return err
+	}
+	c.prefetchOpcode = opcode
+	c.hasPrefetch = true
+	c.PC = addr + 1
+	return nil
+}
+
 func (c *CPU6502) updateZN(v byte) {
 	c.setFlag(flagZ, v == 0)
 	c.setFlag(flagN, (v&0x80) != 0)
@@ -135,6 +208,18 @@ func (c *CPU6502) setFlag(flag byte, enabled bool) {
 		return
 	}
 	c.P &^= flag
+}
+
+func (c *CPU6502) setStatus(v byte) {
+	c.P = v | flagU
+}
+
+func (c *CPU6502) status(withBreak bool) byte {
+	p := c.P | flagU
+	if withBreak {
+		return p | flagB
+	}
+	return p &^ flagB
 }
 
 func (c *CPU6502) getFlag(flag byte) byte {
@@ -155,183 +240,77 @@ func (c *CPU6502) adc(v byte) {
 	c.updateZN(c.A)
 }
 
+func (c *CPU6502) sbc(v byte) {
+	c.adc(^v)
+}
+
+func (c *CPU6502) compare(reg, v byte) {
+	result := reg - v
+	c.setFlag(flagC, reg >= v)
+	c.updateZN(result)
+}
+
+func (c *CPU6502) bit(v byte) {
+	c.setFlag(flagZ, c.A&v == 0)
+	c.setFlag(flagV, v&flagV != 0)
+	c.setFlag(flagN, v&flagN != 0)
+}
+
+func (c *CPU6502) branch(offset byte) {
+	c.PC = uint16(int32(c.PC) + int32(int8(offset)))
+}
+
+func (c *CPU6502) skipMicroOps(count int) {
+	if c.current == nil || count <= 0 {
+		return
+	}
+	c.current.step += count
+}
+
+func (c *CPU6502) pageCrossed(base, target uint16) bool {
+	return base&0xFF00 != target&0xFF00
+}
+
+func (c *CPU6502) asl(v byte) byte {
+	c.setFlag(flagC, v&0x80 != 0)
+	out := v << 1
+	c.updateZN(out)
+	return out
+}
+
+func (c *CPU6502) lsr(v byte) byte {
+	c.setFlag(flagC, v&0x01 != 0)
+	out := v >> 1
+	c.updateZN(out)
+	return out
+}
+
+func (c *CPU6502) rol(v byte) byte {
+	carryIn := c.getFlag(flagC)
+	c.setFlag(flagC, v&0x80 != 0)
+	out := (v << 1) | carryIn
+	c.updateZN(out)
+	return out
+}
+
+func (c *CPU6502) ror(v byte) byte {
+	carryIn := c.getFlag(flagC) << 7
+	c.setFlag(flagC, v&0x01 != 0)
+	out := (v >> 1) | carryIn
+	c.updateZN(out)
+	return out
+}
+
 func (c *CPU6502) Halted() bool {
 	return c.halted
 }
 
 func (c *CPU6502) decode(opcode byte) (*decodedInstruction, error) {
-	switch opcode {
-	case 0xEA: // NOP (2 cycles total)
-		return &decodedInstruction{opcode: opcode, name: "NOP", steps: []microOp{
-			func(_ *emulator.Bus) error { return nil },
-		}}, nil
-
-	case 0xA9: // LDA #imm (2 cycles total)
-		return &decodedInstruction{opcode: opcode, name: "LDA #imm", steps: []microOp{
-			func(bus *emulator.Bus) error {
-				v, err := c.fetchByte(bus)
-				if err != nil {
-					return err
-				}
-				c.A = v
-				c.updateZN(c.A)
-				return nil
-			},
-		}}, nil
-
-	case 0xA5: // LDA zp (3 cycles total)
-		return &decodedInstruction{opcode: opcode, name: "LDA zp", steps: []microOp{
-			func(bus *emulator.Bus) error {
-				v, err := c.fetchByte(bus)
-				if err != nil {
-					return err
-				}
-				c.tmpAddr = uint16(v)
-				return nil
-			},
-			func(bus *emulator.Bus) error {
-				v, err := bus.Read(c.tmpAddr)
-				if err != nil {
-					return err
-				}
-				c.A = v
-				c.updateZN(c.A)
-				return nil
-			},
-		}}, nil
-
-	case 0xAD: // LDA abs (4 cycles total)
-		return &decodedInstruction{opcode: opcode, name: "LDA abs", steps: []microOp{
-			func(bus *emulator.Bus) error {
-				lo, err := c.fetchByte(bus)
-				if err != nil {
-					return err
-				}
-				c.tmp8 = lo
-				return nil
-			},
-			func(bus *emulator.Bus) error {
-				hi, err := c.fetchByte(bus)
-				if err != nil {
-					return err
-				}
-				c.tmpAddr = uint16(hi)<<8 | uint16(c.tmp8)
-				return nil
-			},
-			func(bus *emulator.Bus) error {
-				v, err := bus.Read(c.tmpAddr)
-				if err != nil {
-					return err
-				}
-				c.A = v
-				c.updateZN(c.A)
-				return nil
-			},
-		}}, nil
-
-	case 0x85: // STA zp (3 cycles total)
-		return &decodedInstruction{opcode: opcode, name: "STA zp", steps: []microOp{
-			func(bus *emulator.Bus) error {
-				v, err := c.fetchByte(bus)
-				if err != nil {
-					return err
-				}
-				c.tmpAddr = uint16(v)
-				return nil
-			},
-			func(bus *emulator.Bus) error {
-				return bus.Write(c.tmpAddr, c.A)
-			},
-		}}, nil
-
-	case 0x8D: // STA abs (4 cycles total)
-		return &decodedInstruction{opcode: opcode, name: "STA abs", steps: []microOp{
-			func(bus *emulator.Bus) error {
-				lo, err := c.fetchByte(bus)
-				if err != nil {
-					return err
-				}
-				c.tmp8 = lo
-				return nil
-			},
-			func(bus *emulator.Bus) error {
-				hi, err := c.fetchByte(bus)
-				if err != nil {
-					return err
-				}
-				c.tmpAddr = uint16(hi)<<8 | uint16(c.tmp8)
-				return nil
-			},
-			func(bus *emulator.Bus) error {
-				return bus.Write(c.tmpAddr, c.A)
-			},
-		}}, nil
-
-	case 0xAA: // TAX (2 cycles total)
-		return &decodedInstruction{opcode: opcode, name: "TAX", steps: []microOp{
-			func(_ *emulator.Bus) error {
-				c.X = c.A
-				c.updateZN(c.X)
-				return nil
-			},
-		}}, nil
-
-	case 0xE8: // INX (2 cycles total)
-		return &decodedInstruction{opcode: opcode, name: "INX", steps: []microOp{
-			func(_ *emulator.Bus) error {
-				c.X++
-				c.updateZN(c.X)
-				return nil
-			},
-		}}, nil
-
-	case 0x4C: // JMP abs (3 cycles total)
-		return &decodedInstruction{opcode: opcode, name: "JMP abs", steps: []microOp{
-			func(bus *emulator.Bus) error {
-				lo, err := c.fetchByte(bus)
-				if err != nil {
-					return err
-				}
-				c.tmp8 = lo
-				return nil
-			},
-			func(bus *emulator.Bus) error {
-				hi, err := c.fetchByte(bus)
-				if err != nil {
-					return err
-				}
-				c.PC = uint16(hi)<<8 | uint16(c.tmp8)
-				return nil
-			},
-		}}, nil
-
-	case 0x69: // ADC #imm (2 cycles total)
-		return &decodedInstruction{opcode: opcode, name: "ADC #imm", steps: []microOp{
-			func(bus *emulator.Bus) error {
-				v, err := c.fetchByte(bus)
-				if err != nil {
-					return err
-				}
-				c.adc(v)
-				return nil
-			},
-		}}, nil
-
-	case 0x00: // BRK (simplified 7 cycles total)
-		return &decodedInstruction{opcode: opcode, name: "BRK", steps: []microOp{
-			func(_ *emulator.Bus) error { return nil },
-			func(_ *emulator.Bus) error { return nil },
-			func(_ *emulator.Bus) error { return nil },
-			func(_ *emulator.Bus) error { return nil },
-			func(_ *emulator.Bus) error { return nil },
-			func(_ *emulator.Bus) error {
-				c.setFlag(flagB, true)
-				c.halted = true
-				return nil
-			},
-		}}, nil
-
-	default:
-		return nil, fmt.Errorf("cpu6502: unsupported opcode 0x%02X at PC=0x%04X", opcode, c.PC-1)
+	if instr, ok := Opcode_6502[opcode]; ok {
+		return &decodedInstruction{opcode: opcode, name: instr.Name, steps: instr.action}, nil
 	}
+	return nil, fmt.Errorf("cpu6502: unsupported opcode 0x%02X at PC=0x%04X", opcode, c.PC-1)
 }
+
+// default:
+// 	return nil, fmt.Errorf("cpu6502: unsupported opcode 0x%02X at PC=0x%04X", opcode, c.PC-1)

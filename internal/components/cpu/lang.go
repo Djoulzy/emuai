@@ -1,319 +1,1054 @@
 package cpu
 
-// func (C *CPU6502) initLanguage() {
-// 	opcode_6502 := map[byte]Instruction{
+import "github.com/Djoulzy/emuai/internal/emulator"
 
-// 		0x69: {Name: "ADC", bytes: 2, Cycles: 2, action: C.ADC_imm, addr: immediate},
-// 		0x65: {Name: "ADC", bytes: 2, Cycles: 3, action: C.ADC_zep, addr: zeropage},
-// 		0x75: {Name: "ADC", bytes: 2, Cycles: 4, action: C.ADC_zpx, addr: zeropageX},
-// 		0x6D: {Name: "ADC", bytes: 3, Cycles: 4, action: C.ADC_abs, addr: absolute},
-// 		0x7D: {Name: "ADC", bytes: 3, Cycles: 4, action: C.ADC_abx, addr: absoluteX},
-// 		0x79: {Name: "ADC", bytes: 3, Cycles: 4, action: C.ADC_aby, addr: absoluteY},
-// 		0x61: {Name: "ADC", bytes: 2, Cycles: 6, action: C.ADC_inx, addr: indirectX},
-// 		0x71: {Name: "ADC", bytes: 2, Cycles: 5, action: C.ADC_iny, addr: indirectY},
+type Instruction struct {
+	Name   string
+	Bytes  byte
+	Cycles int
+	action []microOp
+}
 
-// 		0x29: {Name: "AND", bytes: 2, Cycles: 2, action: C.AND_imm, addr: immediate},
-// 		0x25: {Name: "AND", bytes: 2, Cycles: 3, action: C.AND_zep, addr: zeropage},
-// 		0x35: {Name: "AND", bytes: 2, Cycles: 4, action: C.AND_zpx, addr: zeropageX},
-// 		0x2D: {Name: "AND", bytes: 3, Cycles: 4, action: C.AND_abs, addr: absolute},
-// 		0x3D: {Name: "AND", bytes: 3, Cycles: 4, action: C.AND_abx, addr: absoluteX},
-// 		0x39: {Name: "AND", bytes: 3, Cycles: 4, action: C.AND_aby, addr: absoluteY},
-// 		0x21: {Name: "AND", bytes: 2, Cycles: 6, action: C.AND_inx, addr: indirectX},
-// 		0x31: {Name: "AND", bytes: 2, Cycles: 5, action: C.AND_iny, addr: indirectY},
+var Opcode_6502 = make(map[byte]Instruction)
 
-// 		0x0A: {Name: "ASL", bytes: 1, Cycles: 2, action: C.ASL_imp, addr: implied},
-// 		0x06: {Name: "ASL", bytes: 2, Cycles: 5, action: C.ASL_zep, addr: zeropage},
-// 		0x16: {Name: "ASL", bytes: 2, Cycles: 6, action: C.ASL_zpx, addr: zeropageX},
-// 		0x0E: {Name: "ASL", bytes: 3, Cycles: 6, action: C.ASL_abs, addr: absolute},
-// 		0x1E: {Name: "ASL", bytes: 3, Cycles: 7, action: C.ASL_abx, addr: absoluteX},
+type byteConsumer func(byte)
+type byteProducer func() byte
+type byteTransformer func(byte) byte
 
-// 		0x90: {Name: "BCC", bytes: 2, Cycles: 2, action: C.BCC_rel, addr: relative},
-// 		0xB0: {Name: "BCS", bytes: 2, Cycles: 2, action: C.BCS_rel, addr: relative},
-// 		0xF0: {Name: "BEQ", bytes: 2, Cycles: 2, action: C.BEQ_rel, addr: relative},
+func noopMicroOp(_ *emulator.Bus) error {
+	return nil
+}
 
-// 		0x24: {Name: "BIT", bytes: 2, Cycles: 3, action: C.BIT_zep, addr: zeropage},
-// 		0x2C: {Name: "BIT", bytes: 3, Cycles: 4, action: C.BIT_abs, addr: absolute},
+func (c *CPU6502) implied(fn func()) []microOp {
+	return []microOp{
+		func(_ *emulator.Bus) error {
+			fn()
+			return nil
+		},
+	}
+}
 
-// 		0x30: {Name: "BMI", bytes: 2, Cycles: 2, action: C.BMI_rel, addr: relative},
+func (c *CPU6502) immediateRead(fn byteConsumer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			v, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			fn(v)
+			return nil
+		},
+	}
+}
 
-// 		0xD0: {Name: "BNE", bytes: 2, Cycles: 2, action: C.BNE_rel, addr: relative},
+func (c *CPU6502) zeroPageRead(fn byteConsumer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			v, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(v)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			fn(v)
+			return nil
+		},
+	}
+}
 
-// 		0x10: {Name: "BPL", bytes: 2, Cycles: 2, action: C.BPL_rel, addr: relative},
+func (c *CPU6502) zeroPageXRead(fn byteConsumer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			v, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = v
+			return nil
+		},
+		func(_ *emulator.Bus) error {
+			c.tmpAddr = uint16(byte(c.tmp8 + c.X))
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			fn(v)
+			return nil
+		},
+	}
+}
 
-// 		0x00: {Name: "BRK", bytes: 2, Cycles: 7, action: C.BRK_imp, addr: implied},
+func (c *CPU6502) zeroPageYRead(fn byteConsumer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			v, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = v
+			return nil
+		},
+		func(_ *emulator.Bus) error {
+			c.tmpAddr = uint16(byte(c.tmp8 + c.Y))
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			fn(v)
+			return nil
+		},
+	}
+}
 
-// 		0x50: {Name: "BVC", bytes: 2, Cycles: 2, action: C.BVC_rel, addr: relative},
+func (c *CPU6502) absoluteRead(fn byteConsumer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			lo, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			fn(v)
+			return nil
+		},
+	}
+}
 
-// 		0x70: {Name: "BVS", bytes: 2, Cycles: 2, action: C.BVS_rel, addr: relative},
+func (c *CPU6502) absoluteXRead(fn byteConsumer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			lo, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpBase = (uint16(hi) << 8) | uint16(c.tmp8)
+			c.tmpAddr = c.tmpBase + uint16(c.X)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			if !c.pageCrossed(c.tmpBase, c.tmpAddr) {
+				v, err := bus.Read(c.tmpAddr)
+				if err != nil {
+					return err
+				}
+				fn(v)
+				c.skipMicroOps(1)
+				return nil
+			}
+			dummyAddr := (c.tmpBase & 0xFF00) | (c.tmpAddr & 0x00FF)
+			_, err := bus.Read(dummyAddr)
+			return err
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			fn(v)
+			return nil
+		},
+	}
+}
 
-// 		0x18: {Name: "CLC", bytes: 1, Cycles: 2, action: C.CLC_imp, addr: implied},
+func (c *CPU6502) absoluteYRead(fn byteConsumer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			lo, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpBase = (uint16(hi) << 8) | uint16(c.tmp8)
+			c.tmpAddr = c.tmpBase + uint16(c.Y)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			if !c.pageCrossed(c.tmpBase, c.tmpAddr) {
+				v, err := bus.Read(c.tmpAddr)
+				if err != nil {
+					return err
+				}
+				fn(v)
+				c.skipMicroOps(1)
+				return nil
+			}
+			dummyAddr := (c.tmpBase & 0xFF00) | (c.tmpAddr & 0x00FF)
+			_, err := bus.Read(dummyAddr)
+			return err
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			fn(v)
+			return nil
+		},
+	}
+}
 
-// 		0xD8: {Name: "CLD", bytes: 1, Cycles: 2, action: C.CLD_imp, addr: implied},
+func (c *CPU6502) indirectXRead(fn byteConsumer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			base, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = base
+			return nil
+		},
+		func(_ *emulator.Bus) error {
+			c.tmpAddr = uint16(byte(c.tmp8 + c.X))
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			lo, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := bus.Read(uint16(byte(byte(c.tmpAddr) + 1)))
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			fn(v)
+			return nil
+		},
+	}
+}
 
-// 		0x58: {Name: "CLI", bytes: 1, Cycles: 2, action: C.CLI_imp, addr: implied},
+func (c *CPU6502) indirectYRead(fn byteConsumer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			base, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(base)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			lo, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := bus.Read(uint16(byte(byte(c.tmpAddr) + 1)))
+			if err != nil {
+				return err
+			}
+			c.tmpBase = (uint16(hi) << 8) | uint16(c.tmp8)
+			c.tmpAddr = c.tmpBase + uint16(c.Y)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			if !c.pageCrossed(c.tmpBase, c.tmpAddr) {
+				v, err := bus.Read(c.tmpAddr)
+				if err != nil {
+					return err
+				}
+				fn(v)
+				c.skipMicroOps(1)
+				return nil
+			}
+			dummyAddr := (c.tmpBase & 0xFF00) | (c.tmpAddr & 0x00FF)
+			_, err := bus.Read(dummyAddr)
+			return err
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			fn(v)
+			return nil
+		},
+	}
+}
 
-// 		0xB8: {Name: "CLV", bytes: 1, Cycles: 2, action: C.CLV_imp, addr: implied},
+func (c *CPU6502) zeroPageWrite(value byteProducer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			v, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(v)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, value())
+		},
+	}
+}
 
-// 		0xC9: {Name: "CMP", bytes: 2, Cycles: 2, action: C.CMP_imm, addr: immediate},
-// 		0xC5: {Name: "CMP", bytes: 2, Cycles: 3, action: C.CMP_zep, addr: zeropage},
-// 		0xD5: {Name: "CMP", bytes: 2, Cycles: 4, action: C.CMP_zpx, addr: zeropageX},
-// 		0xCD: {Name: "CMP", bytes: 3, Cycles: 4, action: C.CMP_abs, addr: absolute},
-// 		0xDD: {Name: "CMP", bytes: 3, Cycles: 4, action: C.CMP_abx, addr: absoluteX},
-// 		0xD9: {Name: "CMP", bytes: 3, Cycles: 4, action: C.CMP_aby, addr: absoluteY},
-// 		0xC1: {Name: "CMP", bytes: 2, Cycles: 6, action: C.CMP_inx, addr: indirectX},
-// 		0xD1: {Name: "CMP", bytes: 2, Cycles: 5, action: C.CMP_iny, addr: indirectY},
+func (c *CPU6502) zeroPageXWrite(value byteProducer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			v, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = v
+			return nil
+		},
+		func(_ *emulator.Bus) error {
+			c.tmpAddr = uint16(byte(c.tmp8 + c.X))
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, value())
+		},
+	}
+}
 
-// 		0xE0: {Name: "CPX", bytes: 2, Cycles: 2, action: C.CPX_imm, addr: immediate},
-// 		0xE4: {Name: "CPX", bytes: 2, Cycles: 3, action: C.CPX_zep, addr: zeropage},
-// 		0xEC: {Name: "CPX", bytes: 3, Cycles: 4, action: C.CPX_abs, addr: absolute},
+func (c *CPU6502) zeroPageYWrite(value byteProducer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			v, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = v
+			return nil
+		},
+		func(_ *emulator.Bus) error {
+			c.tmpAddr = uint16(byte(c.tmp8 + c.Y))
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, value())
+		},
+	}
+}
 
-// 		0xC0: {Name: "CPY", bytes: 2, Cycles: 2, action: C.CPY_imm, addr: immediate},
-// 		0xC4: {Name: "CPY", bytes: 2, Cycles: 3, action: C.CPY_zep, addr: zeropage},
-// 		0xCC: {Name: "CPY", bytes: 3, Cycles: 4, action: C.CPY_abs, addr: absolute},
+func (c *CPU6502) absoluteWrite(value byteProducer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			lo, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, value())
+		},
+	}
+}
 
-// 		0xC6: {Name: "DEC", bytes: 2, Cycles: 5, action: C.DEC_zep, addr: zeropage},
-// 		0xD6: {Name: "DEC", bytes: 2, Cycles: 6, action: C.DEC_zpx, addr: zeropageX},
-// 		0xCE: {Name: "DEC", bytes: 3, Cycles: 6, action: C.DEC_abs, addr: absolute},
-// 		0xDE: {Name: "DEC", bytes: 3, Cycles: 7, action: C.DEC_abx, addr: absoluteX},
+func (c *CPU6502) absoluteXWrite(value byteProducer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			lo, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpBase = (uint16(hi) << 8) | uint16(c.tmp8)
+			c.tmpAddr = c.tmpBase + uint16(c.X)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			dummyAddr := (c.tmpBase & 0xFF00) | (c.tmpAddr & 0x00FF)
+			_, err := bus.Read(dummyAddr)
+			return err
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, value())
+		},
+	}
+}
 
-// 		0xCA: {Name: "DEX", bytes: 1, Cycles: 2, action: C.DEX_imp, addr: implied},
-// 		0x88: {Name: "DEY", bytes: 1, Cycles: 2, action: C.DEY_imp, addr: implied},
+func (c *CPU6502) absoluteYWrite(value byteProducer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			lo, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpBase = (uint16(hi) << 8) | uint16(c.tmp8)
+			c.tmpAddr = c.tmpBase + uint16(c.Y)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			dummyAddr := (c.tmpBase & 0xFF00) | (c.tmpAddr & 0x00FF)
+			_, err := bus.Read(dummyAddr)
+			return err
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, value())
+		},
+	}
+}
 
-// 		0x49: {Name: "EOR", bytes: 2, Cycles: 2, action: C.EOR_imm, addr: immediate},
-// 		0x45: {Name: "EOR", bytes: 2, Cycles: 3, action: C.EOR_zep, addr: zeropage},
-// 		0x55: {Name: "EOR", bytes: 2, Cycles: 4, action: C.EOR_zpx, addr: zeropageX},
-// 		0x4D: {Name: "EOR", bytes: 3, Cycles: 4, action: C.EOR_abs, addr: absolute},
-// 		0x5D: {Name: "EOR", bytes: 3, Cycles: 4, action: C.EOR_abx, addr: absoluteX},
-// 		0x59: {Name: "EOR", bytes: 3, Cycles: 4, action: C.EOR_aby, addr: absoluteY},
-// 		0x41: {Name: "EOR", bytes: 2, Cycles: 6, action: C.EOR_inx, addr: indirectX},
-// 		0x51: {Name: "EOR", bytes: 2, Cycles: 5, action: C.EOR_iny, addr: indirectY},
+func (c *CPU6502) indirectXWrite(value byteProducer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			base, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = base
+			return nil
+		},
+		func(_ *emulator.Bus) error {
+			c.tmpAddr = uint16(byte(c.tmp8 + c.X))
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			lo, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := bus.Read(uint16(byte(byte(c.tmpAddr) + 1)))
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, value())
+		},
+	}
+}
 
-// 		0xE6: {Name: "INC", bytes: 2, Cycles: 5, action: C.INC_zep, addr: zeropage},
-// 		0xF6: {Name: "INC", bytes: 2, Cycles: 6, action: C.INC_zpx, addr: zeropageX},
-// 		0xEE: {Name: "INC", bytes: 3, Cycles: 6, action: C.INC_abs, addr: absolute},
-// 		0xFE: {Name: "INC", bytes: 3, Cycles: 7, action: C.INC_abx, addr: absoluteX},
+func (c *CPU6502) indirectYWrite(value byteProducer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			base, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(base)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			lo, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := bus.Read(uint16(byte(byte(c.tmpAddr) + 1)))
+			if err != nil {
+				return err
+			}
+			c.tmpBase = (uint16(hi) << 8) | uint16(c.tmp8)
+			c.tmpAddr = c.tmpBase + uint16(c.Y)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			dummyAddr := (c.tmpBase & 0xFF00) | (c.tmpAddr & 0x00FF)
+			_, err := bus.Read(dummyAddr)
+			return err
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, value())
+		},
+	}
+}
 
-// 		0xE8: {Name: "INX", bytes: 1, Cycles: 2, action: C.INX_imp, addr: implied},
-// 		0xC8: {Name: "INY", bytes: 1, Cycles: 2, action: C.INY_imp, addr: implied},
+func (c *CPU6502) zeroPageModify(transform byteTransformer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			addr, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(addr)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = v
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, c.tmp8)
+		},
+		func(bus *emulator.Bus) error {
+			c.tmp8 = transform(c.tmp8)
+			return bus.Write(c.tmpAddr, c.tmp8)
+		},
+	}
+}
 
-// 		0x4C: {Name: "JMP", bytes: 3, Cycles: 3, action: C.JMP_abs, addr: absolute},
-// 		0x6C: {Name: "JMP", bytes: 3, Cycles: 5, action: C.JMP_ind, addr: indirect},
+func (c *CPU6502) zeroPageXModify(transform byteTransformer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			addr, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = addr
+			return nil
+		},
+		func(_ *emulator.Bus) error {
+			c.tmpAddr = uint16(byte(c.tmp8 + c.X))
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = v
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, c.tmp8)
+		},
+		func(bus *emulator.Bus) error {
+			c.tmp8 = transform(c.tmp8)
+			return bus.Write(c.tmpAddr, c.tmp8)
+		},
+	}
+}
 
-// 		0x20: {Name: "JSR", bytes: 3, Cycles: 6, action: C.JSR_abs, addr: absolute},
+func (c *CPU6502) absoluteModify(transform byteTransformer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			lo, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = v
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, c.tmp8)
+		},
+		func(bus *emulator.Bus) error {
+			c.tmp8 = transform(c.tmp8)
+			return bus.Write(c.tmpAddr, c.tmp8)
+		},
+	}
+}
 
-// 		0xA9: {Name: "LDA", bytes: 2, Cycles: 2, action: C.LDA_imm, addr: immediate},
-// 		0xA5: {Name: "LDA", bytes: 2, Cycles: 3, action: C.LDA_zep, addr: zeropage},
-// 		0xB5: {Name: "LDA", bytes: 2, Cycles: 4, action: C.LDA_zpx, addr: zeropageX},
-// 		0xAD: {Name: "LDA", bytes: 3, Cycles: 4, action: C.LDA_abs, addr: absolute},
-// 		0xBD: {Name: "LDA", bytes: 3, Cycles: 4, action: C.LDA_abx, addr: absoluteX},
-// 		0xB9: {Name: "LDA", bytes: 3, Cycles: 4, action: C.LDA_aby, addr: absoluteY},
-// 		0xA1: {Name: "LDA", bytes: 2, Cycles: 6, action: C.LDA_inx, addr: indirectX},
-// 		0xB1: {Name: "LDA", bytes: 2, Cycles: 5, action: C.LDA_iny, addr: indirectY},
+func (c *CPU6502) absoluteXModify(transform byteTransformer) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			lo, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpBase = (uint16(hi) << 8) | uint16(c.tmp8)
+			c.tmpAddr = c.tmpBase + uint16(c.X)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			dummyAddr := (c.tmpBase & 0xFF00) | (c.tmpAddr & 0x00FF)
+			_, err := bus.Read(dummyAddr)
+			return err
+		},
+		func(bus *emulator.Bus) error {
+			v, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = v
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			return bus.Write(c.tmpAddr, c.tmp8)
+		},
+		func(bus *emulator.Bus) error {
+			c.tmp8 = transform(c.tmp8)
+			return bus.Write(c.tmpAddr, c.tmp8)
+		},
+	}
+}
 
-// 		0xA2: {Name: "LDX", bytes: 2, Cycles: 2, action: C.LDX_imm, addr: immediate},
-// 		0xA6: {Name: "LDX", bytes: 2, Cycles: 3, action: C.LDX_zep, addr: zeropage},
-// 		0xB6: {Name: "LDX", bytes: 2, Cycles: 4, action: C.LDX_zpy, addr: zeropageY},
-// 		0xAE: {Name: "LDX", bytes: 3, Cycles: 4, action: C.LDX_abs, addr: absolute},
-// 		0xBE: {Name: "LDX", bytes: 3, Cycles: 4, action: C.LDX_aby, addr: absoluteY},
+func (c *CPU6502) accumulatorModify(transform byteTransformer) []microOp {
+	return []microOp{
+		func(_ *emulator.Bus) error {
+			c.A = transform(c.A)
+			return nil
+		},
+	}
+}
 
-// 		0xA0: {Name: "LDY", bytes: 2, Cycles: 2, action: C.LDY_imm, addr: immediate},
-// 		0xA4: {Name: "LDY", bytes: 2, Cycles: 3, action: C.LDY_zep, addr: zeropage},
-// 		0xB4: {Name: "LDY", bytes: 2, Cycles: 4, action: C.LDY_zpx, addr: zeropageX},
-// 		0xAC: {Name: "LDY", bytes: 3, Cycles: 4, action: C.LDY_abs, addr: absolute},
-// 		0xBC: {Name: "LDY", bytes: 3, Cycles: 4, action: C.LDY_abx, addr: absoluteX},
+func (c *CPU6502) relativeBranch(condition func() bool) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			offset, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = offset
+			if !condition() {
+				c.skipMicroOps(2)
+			}
+			return nil
+		},
+		func(_ *emulator.Bus) error {
+			base := c.PC
+			c.branch(c.tmp8)
+			if !c.pageCrossed(base, c.PC) {
+				c.skipMicroOps(1)
+			}
+			return nil
+		},
+		noopMicroOp,
+	}
+}
 
-// 		0x4A: {Name: "LSR", bytes: 1, Cycles: 2, action: C.LSR_imp, addr: implied},
-// 		0x46: {Name: "LSR", bytes: 2, Cycles: 5, action: C.LSR_zep, addr: zeropage},
-// 		0x56: {Name: "LSR", bytes: 2, Cycles: 6, action: C.LSR_zpx, addr: zeropageX},
-// 		0x4E: {Name: "LSR", bytes: 3, Cycles: 6, action: C.LSR_abs, addr: absolute},
-// 		0x5E: {Name: "LSR", bytes: 3, Cycles: 7, action: C.LSR_abx, addr: absoluteX},
+func (c *CPU6502) initLanguage() {
+	Opcode_6502 = make(map[byte]Instruction, 151)
 
-// 		0xEA: {Name: "NOP", bytes: 1, Cycles: 2, action: C.NOP_1x2, addr: implied},
+	register := func(opcode byte, name string, bytes byte, cycles int, action []microOp) {
+		Opcode_6502[opcode] = Instruction{Name: name, Bytes: bytes, Cycles: cycles, action: action}
+	}
 
-// 		0x09: {Name: "ORA", bytes: 2, Cycles: 2, action: C.ORA_imm, addr: immediate},
-// 		0x05: {Name: "ORA", bytes: 2, Cycles: 3, action: C.ORA_zep, addr: zeropage},
-// 		0x15: {Name: "ORA", bytes: 2, Cycles: 4, action: C.ORA_zpx, addr: zeropageX},
-// 		0x0D: {Name: "ORA", bytes: 3, Cycles: 4, action: C.ORA_abs, addr: absolute},
-// 		0x1D: {Name: "ORA", bytes: 3, Cycles: 4, action: C.ORA_abx, addr: absoluteX},
-// 		0x19: {Name: "ORA", bytes: 3, Cycles: 4, action: C.ORA_aby, addr: absoluteY},
-// 		0x01: {Name: "ORA", bytes: 2, Cycles: 6, action: C.ORA_inx, addr: indirectX},
-// 		0x11: {Name: "ORA", bytes: 2, Cycles: 5, action: C.ORA_iny, addr: indirectY},
+	loadA := func(v byte) {
+		c.A = v
+		c.updateZN(c.A)
+	}
+	loadX := func(v byte) {
+		c.X = v
+		c.updateZN(c.X)
+	}
+	loadY := func(v byte) {
+		c.Y = v
+		c.updateZN(c.Y)
+	}
 
-// 		0x48: {Name: "PHA", bytes: 1, Cycles: 3, action: C.PHA_imp, addr: implied},
-// 		0x08: {Name: "PHP", bytes: 1, Cycles: 3, action: C.PHP_imp, addr: implied},
-// 		0x68: {Name: "PLA", bytes: 1, Cycles: 4, action: C.PLA_imp, addr: implied},
-// 		0x28: {Name: "PLP", bytes: 1, Cycles: 4, action: C.PLP_imp, addr: implied},
+	register(0x00, "BRK", 1, 7, []microOp{noopMicroOp, noopMicroOp, noopMicroOp, noopMicroOp, noopMicroOp, func(_ *emulator.Bus) error {
+		c.setFlag(flagB, true)
+		c.halted = true
+		return nil
+	}})
+	register(0xEA, "NOP", 1, 2, []microOp{noopMicroOp})
 
-// 		0x2A: {Name: "ROL", bytes: 1, Cycles: 2, action: C.ROL_imp, addr: implied},
-// 		0x26: {Name: "ROL", bytes: 2, Cycles: 5, action: C.ROL_zep, addr: zeropage},
-// 		0x36: {Name: "ROL", bytes: 2, Cycles: 6, action: C.ROL_zpx, addr: zeropageX},
-// 		0x2E: {Name: "ROL", bytes: 3, Cycles: 6, action: C.ROL_abs, addr: absolute},
-// 		0x3E: {Name: "ROL", bytes: 3, Cycles: 7, action: C.ROL_abx, addr: absoluteX},
+	register(0x69, "ADC #imm", 2, 2, c.immediateRead(c.adc))
+	register(0x65, "ADC zp", 2, 3, c.zeroPageRead(c.adc))
+	register(0x75, "ADC zp,X", 2, 4, c.zeroPageXRead(c.adc))
+	register(0x6D, "ADC abs", 3, 4, c.absoluteRead(c.adc))
+	register(0x7D, "ADC abs,X", 3, 4, c.absoluteXRead(c.adc))
+	register(0x79, "ADC abs,Y", 3, 4, c.absoluteYRead(c.adc))
+	register(0x61, "ADC (zp,X)", 2, 6, c.indirectXRead(c.adc))
+	register(0x71, "ADC (zp),Y", 2, 5, c.indirectYRead(c.adc))
 
-// 		0x6A: {Name: "ROR", bytes: 1, Cycles: 2, action: C.ROR_imp, addr: implied},
-// 		0x66: {Name: "ROR", bytes: 2, Cycles: 5, action: C.ROR_zep, addr: zeropage},
-// 		0x76: {Name: "ROR", bytes: 2, Cycles: 6, action: C.ROR_zpx, addr: zeropageX},
-// 		0x6E: {Name: "ROR", bytes: 3, Cycles: 6, action: C.ROR_abs, addr: absolute},
-// 		0x7E: {Name: "ROR", bytes: 3, Cycles: 7, action: C.ROR_abx, addr: absoluteX},
+	register(0x29, "AND #imm", 2, 2, c.immediateRead(func(v byte) { loadA(c.A & v) }))
+	register(0x25, "AND zp", 2, 3, c.zeroPageRead(func(v byte) { loadA(c.A & v) }))
+	register(0x35, "AND zp,X", 2, 4, c.zeroPageXRead(func(v byte) { loadA(c.A & v) }))
+	register(0x2D, "AND abs", 3, 4, c.absoluteRead(func(v byte) { loadA(c.A & v) }))
+	register(0x3D, "AND abs,X", 3, 4, c.absoluteXRead(func(v byte) { loadA(c.A & v) }))
+	register(0x39, "AND abs,Y", 3, 4, c.absoluteYRead(func(v byte) { loadA(c.A & v) }))
+	register(0x21, "AND (zp,X)", 2, 6, c.indirectXRead(func(v byte) { loadA(c.A & v) }))
+	register(0x31, "AND (zp),Y", 2, 5, c.indirectYRead(func(v byte) { loadA(c.A & v) }))
 
-// 		0x40: {Name: "RTI", bytes: 1, Cycles: 6, action: C.RTI_imp, addr: implied},
+	register(0x0A, "ASL A", 1, 2, c.accumulatorModify(c.asl))
+	register(0x06, "ASL zp", 2, 5, c.zeroPageModify(c.asl))
+	register(0x16, "ASL zp,X", 2, 6, c.zeroPageXModify(c.asl))
+	register(0x0E, "ASL abs", 3, 6, c.absoluteModify(c.asl))
+	register(0x1E, "ASL abs,X", 3, 7, c.absoluteXModify(c.asl))
 
-// 		0x60: {Name: "RTS", bytes: 1, Cycles: 6, action: C.RTS_imp, addr: implied},
+	register(0x90, "BCC", 2, 2, c.relativeBranch(func() bool { return c.getFlag(flagC) == 0 }))
+	register(0xB0, "BCS", 2, 2, c.relativeBranch(func() bool { return c.getFlag(flagC) != 0 }))
+	register(0xF0, "BEQ", 2, 2, c.relativeBranch(func() bool { return c.getFlag(flagZ) != 0 }))
+	register(0x30, "BMI", 2, 2, c.relativeBranch(func() bool { return c.getFlag(flagN) != 0 }))
+	register(0xD0, "BNE", 2, 2, c.relativeBranch(func() bool { return c.getFlag(flagZ) == 0 }))
+	register(0x10, "BPL", 2, 2, c.relativeBranch(func() bool { return c.getFlag(flagN) == 0 }))
+	register(0x50, "BVC", 2, 2, c.relativeBranch(func() bool { return c.getFlag(flagV) == 0 }))
+	register(0x70, "BVS", 2, 2, c.relativeBranch(func() bool { return c.getFlag(flagV) != 0 }))
 
-// 		0xE9: {Name: "SBC", bytes: 2, Cycles: 2, action: C.SBC_imm, addr: immediate},
-// 		0xE5: {Name: "SBC", bytes: 2, Cycles: 3, action: C.SBC_zep, addr: zeropage},
-// 		0xF5: {Name: "SBC", bytes: 2, Cycles: 4, action: C.SBC_zpx, addr: zeropageX},
-// 		0xED: {Name: "SBC", bytes: 3, Cycles: 4, action: C.SBC_abs, addr: absolute},
-// 		0xFD: {Name: "SBC", bytes: 3, Cycles: 4, action: C.SBC_abx, addr: absoluteX},
-// 		0xF9: {Name: "SBC", bytes: 3, Cycles: 4, action: C.SBC_aby, addr: absoluteY},
-// 		0xE1: {Name: "SBC", bytes: 2, Cycles: 6, action: C.SBC_inx, addr: indirectX},
-// 		0xF1: {Name: "SBC", bytes: 2, Cycles: 5, action: C.SBC_iny, addr: indirectY},
+	register(0x24, "BIT zp", 2, 3, c.zeroPageRead(c.bit))
+	register(0x2C, "BIT abs", 3, 4, c.absoluteRead(c.bit))
 
-// 		0x38: {Name: "SEC", bytes: 1, Cycles: 2, action: C.SEC_imp, addr: implied},
+	register(0x18, "CLC", 1, 2, c.implied(func() { c.setFlag(flagC, false) }))
+	register(0xD8, "CLD", 1, 2, c.implied(func() { c.setFlag(flagD, false) }))
+	register(0x58, "CLI", 1, 2, c.implied(func() { c.setFlag(flagI, false) }))
+	register(0xB8, "CLV", 1, 2, c.implied(func() { c.setFlag(flagV, false) }))
 
-// 		0xF8: {Name: "SED", bytes: 1, Cycles: 2, action: C.SED_imp, addr: implied},
+	register(0xC9, "CMP #imm", 2, 2, c.immediateRead(func(v byte) { c.compare(c.A, v) }))
+	register(0xC5, "CMP zp", 2, 3, c.zeroPageRead(func(v byte) { c.compare(c.A, v) }))
+	register(0xD5, "CMP zp,X", 2, 4, c.zeroPageXRead(func(v byte) { c.compare(c.A, v) }))
+	register(0xCD, "CMP abs", 3, 4, c.absoluteRead(func(v byte) { c.compare(c.A, v) }))
+	register(0xDD, "CMP abs,X", 3, 4, c.absoluteXRead(func(v byte) { c.compare(c.A, v) }))
+	register(0xD9, "CMP abs,Y", 3, 4, c.absoluteYRead(func(v byte) { c.compare(c.A, v) }))
+	register(0xC1, "CMP (zp,X)", 2, 6, c.indirectXRead(func(v byte) { c.compare(c.A, v) }))
+	register(0xD1, "CMP (zp),Y", 2, 5, c.indirectYRead(func(v byte) { c.compare(c.A, v) }))
 
-// 		0x78: {Name: "SEI", bytes: 1, Cycles: 2, action: C.SEI_imp, addr: implied},
+	register(0xE0, "CPX #imm", 2, 2, c.immediateRead(func(v byte) { c.compare(c.X, v) }))
+	register(0xE4, "CPX zp", 2, 3, c.zeroPageRead(func(v byte) { c.compare(c.X, v) }))
+	register(0xEC, "CPX abs", 3, 4, c.absoluteRead(func(v byte) { c.compare(c.X, v) }))
 
-// 		0x85: {Name: "STA", bytes: 2, Cycles: 3, action: C.STA_zep, addr: zeropage},
-// 		0x95: {Name: "STA", bytes: 2, Cycles: 4, action: C.STA_zpx, addr: zeropageX},
-// 		0x8D: {Name: "STA", bytes: 3, Cycles: 4, action: C.STA_abs, addr: absolute},
-// 		0x9D: {Name: "STA", bytes: 3, Cycles: 5, action: C.STA_abx, addr: absoluteX},
-// 		0x99: {Name: "STA", bytes: 3, Cycles: 5, action: C.STA_aby, addr: absoluteY},
-// 		0x81: {Name: "STA", bytes: 2, Cycles: 6, action: C.STA_inx, addr: indirectX},
-// 		0x91: {Name: "STA", bytes: 2, Cycles: 6, action: C.STA_iny, addr: indirectY},
+	register(0xC0, "CPY #imm", 2, 2, c.immediateRead(func(v byte) { c.compare(c.Y, v) }))
+	register(0xC4, "CPY zp", 2, 3, c.zeroPageRead(func(v byte) { c.compare(c.Y, v) }))
+	register(0xCC, "CPY abs", 3, 4, c.absoluteRead(func(v byte) { c.compare(c.Y, v) }))
 
-// 		0x86: {Name: "STX", bytes: 2, Cycles: 3, action: C.STX_zep, addr: zeropage},
-// 		0x96: {Name: "STX", bytes: 2, Cycles: 4, action: C.STX_zpy, addr: zeropageY},
-// 		0x8E: {Name: "STX", bytes: 3, Cycles: 4, action: C.STX_abs, addr: absolute},
+	register(0xC6, "DEC zp", 2, 5, c.zeroPageModify(func(v byte) byte { return v - 1 }))
+	register(0xD6, "DEC zp,X", 2, 6, c.zeroPageXModify(func(v byte) byte { return v - 1 }))
+	register(0xCE, "DEC abs", 3, 6, c.absoluteModify(func(v byte) byte { return v - 1 }))
+	register(0xDE, "DEC abs,X", 3, 7, c.absoluteXModify(func(v byte) byte { return v - 1 }))
 
-// 		0x84: {Name: "STY", bytes: 2, Cycles: 3, action: C.STY_zep, addr: zeropage},
-// 		0x94: {Name: "STY", bytes: 2, Cycles: 4, action: C.STY_zpx, addr: zeropageX},
-// 		0x8C: {Name: "STY", bytes: 3, Cycles: 4, action: C.STY_abs, addr: absolute},
+	register(0xCA, "DEX", 1, 2, c.implied(func() { c.X--; c.updateZN(c.X) }))
+	register(0x88, "DEY", 1, 2, c.implied(func() { c.Y--; c.updateZN(c.Y) }))
 
-// 		0xAA: {Name: "TAX", bytes: 1, Cycles: 2, action: C.TAX_imp, addr: implied},
-// 		0xA8: {Name: "TAY", bytes: 1, Cycles: 2, action: C.TAY_imp, addr: implied},
-// 		0xBA: {Name: "TSX", bytes: 1, Cycles: 2, action: C.TSX_imp, addr: implied},
-// 		0x8A: {Name: "TXA", bytes: 1, Cycles: 2, action: C.TXA_imp, addr: implied},
-// 		0x9A: {Name: "TXS", bytes: 1, Cycles: 2, action: C.TXS_imp, addr: implied},
-// 		0x98: {Name: "TYA", bytes: 1, Cycles: 2, action: C.TYA_imp, addr: implied},
-// 	}
+	register(0x49, "EOR #imm", 2, 2, c.immediateRead(func(v byte) { loadA(c.A ^ v) }))
+	register(0x45, "EOR zp", 2, 3, c.zeroPageRead(func(v byte) { loadA(c.A ^ v) }))
+	register(0x55, "EOR zp,X", 2, 4, c.zeroPageXRead(func(v byte) { loadA(c.A ^ v) }))
+	register(0x4D, "EOR abs", 3, 4, c.absoluteRead(func(v byte) { loadA(c.A ^ v) }))
+	register(0x5D, "EOR abs,X", 3, 4, c.absoluteXRead(func(v byte) { loadA(c.A ^ v) }))
+	register(0x59, "EOR abs,Y", 3, 4, c.absoluteYRead(func(v byte) { loadA(c.A ^ v) }))
+	register(0x41, "EOR (zp,X)", 2, 6, c.indirectXRead(func(v byte) { loadA(c.A ^ v) }))
+	register(0x51, "EOR (zp),Y", 2, 5, c.indirectYRead(func(v byte) { loadA(c.A ^ v) }))
 
-// 	opcode_65C02 := map[byte]Instruction{
+	register(0xE6, "INC zp", 2, 5, c.zeroPageModify(func(v byte) byte { return v + 1 }))
+	register(0xF6, "INC zp,X", 2, 6, c.zeroPageXModify(func(v byte) byte { return v + 1 }))
+	register(0xEE, "INC abs", 3, 6, c.absoluteModify(func(v byte) byte { return v + 1 }))
+	register(0xFE, "INC abs,X", 3, 7, c.absoluteXModify(func(v byte) byte { return v + 1 }))
 
-// 		0x32: {Name: "AND", bytes: 2, Cycles: 5, action: C.AND_izp, addr: indirectzp},
-// 		0x12: {Name: "ORA", bytes: 2, Cycles: 5, action: C.ORA_izp, addr: indirectzp},
-// 		0x52: {Name: "EOR", bytes: 2, Cycles: 5, action: C.EOR_izp, addr: indirectzp},
-// 		0x72: {Name: "ADC", bytes: 2, Cycles: 5, action: C.ADC_izp, addr: indirectzp},
-// 		0xF2: {Name: "SBC", bytes: 2, Cycles: 5, action: C.SBC_izp, addr: indirectzp},
-// 		0x80: {Name: "BRA", bytes: 2, Cycles: 2, action: C.BRA_rel, addr: relative},
-// 		0x0F: {Name: "BBR0", bytes: 3, Cycles: 5, action: C.BBR0_rel, addr: relative},
-// 		0x1F: {Name: "BBR1", bytes: 3, Cycles: 5, action: C.BBR1_rel, addr: relative},
-// 		0x2F: {Name: "BBR2", bytes: 3, Cycles: 5, action: C.BBR2_rel, addr: relative},
-// 		0x3F: {Name: "BBR3", bytes: 3, Cycles: 5, action: C.BBR3_rel, addr: relative},
-// 		0x4F: {Name: "BBR4", bytes: 3, Cycles: 5, action: C.BBR4_rel, addr: relative},
-// 		0x5F: {Name: "BBR5", bytes: 3, Cycles: 5, action: C.BBR5_rel, addr: relative},
-// 		0x6F: {Name: "BBR6", bytes: 3, Cycles: 5, action: C.BBR6_rel, addr: relative},
-// 		0x7F: {Name: "BBR7", bytes: 3, Cycles: 5, action: C.BBR7_rel, addr: relative},
-// 		0x8F: {Name: "BBS0", bytes: 3, Cycles: 5, action: C.BBS0_rel, addr: relative},
-// 		0x9F: {Name: "BBS1", bytes: 3, Cycles: 5, action: C.BBS1_rel, addr: relative},
-// 		0xAF: {Name: "BBS2", bytes: 3, Cycles: 5, action: C.BBS2_rel, addr: relative},
-// 		0xBF: {Name: "BBS3", bytes: 3, Cycles: 5, action: C.BBS3_rel, addr: relative},
-// 		0xCF: {Name: "BBS4", bytes: 3, Cycles: 5, action: C.BBS4_rel, addr: relative},
-// 		0xDF: {Name: "BBS5", bytes: 3, Cycles: 5, action: C.BBS5_rel, addr: relative},
-// 		0xEF: {Name: "BBS6", bytes: 3, Cycles: 5, action: C.BBS6_rel, addr: relative},
-// 		0xFF: {Name: "BBS7", bytes: 3, Cycles: 5, action: C.BBS7_rel, addr: relative},
-// 		0x07: {Name: "RMB0", bytes: 2, Cycles: 5, action: C.RMB0_zep, addr: zeropage},
-// 		0x17: {Name: "RMB1", bytes: 2, Cycles: 5, action: C.RMB1_zep, addr: zeropage},
-// 		0x27: {Name: "RMB2", bytes: 2, Cycles: 5, action: C.RMB2_zep, addr: zeropage},
-// 		0x37: {Name: "RMB3", bytes: 2, Cycles: 5, action: C.RMB3_zep, addr: zeropage},
-// 		0x47: {Name: "RMB4", bytes: 2, Cycles: 5, action: C.RMB4_zep, addr: zeropage},
-// 		0x57: {Name: "RMB5", bytes: 2, Cycles: 5, action: C.RMB5_zep, addr: zeropage},
-// 		0x67: {Name: "RMB6", bytes: 2, Cycles: 5, action: C.RMB6_zep, addr: zeropage},
-// 		0x77: {Name: "RMB7", bytes: 2, Cycles: 5, action: C.RMB7_zep, addr: zeropage},
-// 		0x87: {Name: "SMB0", bytes: 2, Cycles: 5, action: C.SMB0_zep, addr: zeropage},
-// 		0x97: {Name: "SMB1", bytes: 2, Cycles: 5, action: C.SMB1_zep, addr: zeropage},
-// 		0xA7: {Name: "SMB2", bytes: 2, Cycles: 5, action: C.SMB2_zep, addr: zeropage},
-// 		0xB7: {Name: "SMB3", bytes: 2, Cycles: 5, action: C.SMB3_zep, addr: zeropage},
-// 		0xC7: {Name: "SMB4", bytes: 2, Cycles: 5, action: C.SMB4_zep, addr: zeropage},
-// 		0xD7: {Name: "SMB5", bytes: 2, Cycles: 5, action: C.SMB5_zep, addr: zeropage},
-// 		0xE7: {Name: "SMB6", bytes: 2, Cycles: 5, action: C.SMB6_zep, addr: zeropage},
-// 		0xF7: {Name: "SMB7", bytes: 2, Cycles: 5, action: C.SMB7_zep, addr: zeropage},
-// 		0x3A: {Name: "DEA", bytes: 1, Cycles: 2, action: C.DEA_imp, addr: implied},
-// 		0x1A: {Name: "INA", bytes: 1, Cycles: 2, action: C.INA_imp, addr: implied},
-// 		0x7C: {Name: "JMP", bytes: 3, Cycles: 6, action: C.JMP_inx, addr: indirectX},
-// 		0x20: {Name: "JSR", bytes: 3, Cycles: 6, action: C.JSR_abs, addr: absolute},
-// 		0xB2: {Name: "LDA", bytes: 2, Cycles: 5, action: C.LDA_izp, addr: indirectzp},
-// 		0x03: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x13: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x23: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x33: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x43: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x53: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x63: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x73: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x83: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x93: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xA3: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xB3: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xC3: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xD3: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xE3: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xF3: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x0B: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x1B: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x2B: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x3B: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x4B: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x5B: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x6B: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x7B: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x8B: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x9B: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xAB: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xBB: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xCB: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xDB: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xEB: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0xFB: {Name: "NOP", bytes: 1, Cycles: 1, action: C.NOP_1x1, addr: immediate},
-// 		0x02: {Name: "NOP", bytes: 2, Cycles: 2, action: C.NOP_2x2, addr: immediate},
-// 		0x22: {Name: "NOP", bytes: 2, Cycles: 2, action: C.NOP_2x2, addr: immediate},
-// 		0x42: {Name: "NOP", bytes: 2, Cycles: 2, action: C.NOP_2x2, addr: immediate},
-// 		0x62: {Name: "NOP", bytes: 2, Cycles: 2, action: C.NOP_2x2, addr: immediate},
-// 		0x82: {Name: "NOP", bytes: 2, Cycles: 2, action: C.NOP_2x2, addr: immediate},
-// 		0xC2: {Name: "NOP", bytes: 2, Cycles: 2, action: C.NOP_2x2, addr: immediate},
-// 		0xE2: {Name: "NOP", bytes: 2, Cycles: 2, action: C.NOP_2x2, addr: immediate},
-// 		0x54: {Name: "NOP", bytes: 2, Cycles: 4, action: C.NOP_2x4, addr: immediate},
-// 		0xD4: {Name: "NOP", bytes: 2, Cycles: 4, action: C.NOP_2x4, addr: immediate},
-// 		0xF4: {Name: "NOP", bytes: 2, Cycles: 4, action: C.NOP_2x4, addr: immediate},
-// 		0x5C: {Name: "NOP", bytes: 3, Cycles: 8, action: C.NOP_3x8, addr: immediate},
-// 		0xDC: {Name: "NOP", bytes: 3, Cycles: 4, action: C.NOP_3x4, addr: immediate},
-// 		0xFC: {Name: "NOP", bytes: 3, Cycles: 4, action: C.NOP_3x4, addr: immediate},
-// 		0x44: {Name: "NOP", bytes: 2, Cycles: 3, action: C.NOP_2x3, addr: immediate},
-// 		0xDA: {Name: "PHX", bytes: 1, Cycles: 3, action: C.PHX_imp, addr: implied},
-// 		0x5A: {Name: "PHY", bytes: 1, Cycles: 3, action: C.PHY_imp, addr: implied},
-// 		0xFA: {Name: "PLX", bytes: 1, Cycles: 4, action: C.PLX_imp, addr: implied},
-// 		0x7A: {Name: "PLY", bytes: 1, Cycles: 4, action: C.PLY_imp, addr: implied},
-// 		0x92: {Name: "STA", bytes: 2, Cycles: 5, action: C.STA_izp, addr: indirectzp},
-// 		0xD2: {Name: "CMP", bytes: 2, Cycles: 5, action: C.CMP_izp, addr: indirectzp},
-// 		0x64: {Name: "STZ", bytes: 2, Cycles: 3, action: C.STZ_zep, addr: zeropage},
-// 		0x74: {Name: "STZ", bytes: 2, Cycles: 4, action: C.STZ_zpx, addr: zeropageX},
-// 		0x9C: {Name: "STZ", bytes: 3, Cycles: 4, action: C.STZ_abs, addr: absolute},
-// 		0x9E: {Name: "STZ", bytes: 3, Cycles: 5, action: C.STZ_abx, addr: absoluteX},
-// 		0x89: {Name: "BIT", bytes: 2, Cycles: 3, action: C.BIT_imm, addr: immediate},
-// 		0x34: {Name: "BIT", bytes: 3, Cycles: 4, action: C.BIT_zpx, addr: zeropageX},
-// 		0x3C: {Name: "BIT", bytes: 3, Cycles: 4, action: C.BIT_abx, addr: absoluteX},
-// 		0x14: {Name: "TRB", bytes: 2, Cycles: 5, action: C.TRB_zep, addr: zeropage},
-// 		0x1C: {Name: "TRB", bytes: 3, Cycles: 6, action: C.TRB_abs, addr: absolute},
-// 		0x04: {Name: "TSB", bytes: 2, Cycles: 5, action: C.TSB_zep, addr: zeropage},
-// 		0x0C: {Name: "TSB", bytes: 3, Cycles: 6, action: C.TSB_abs, addr: absolute},
-// 	}
+	register(0xE8, "INX", 1, 2, c.implied(func() { c.X++; c.updateZN(c.X) }))
+	register(0xC8, "INY", 1, 2, c.implied(func() { c.Y++; c.updateZN(c.Y) }))
 
-// 	switch C.model {
-// 	case "6502":
-// 		C.Mnemonic = opcode_6502
-// 	case "65C02":
-// 		C.Mnemonic = opcode_6502
-// 		maps.Copy(C.Mnemonic, opcode_65C02)
-// 	}
-// }
+	register(0x4C, "JMP abs", 3, 3, []microOp{
+		func(bus *emulator.Bus) error {
+			lo, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.PC = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+	})
+	register(0x6C, "JMP ind", 3, 5, []microOp{
+		func(bus *emulator.Bus) error {
+			lo, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			lo, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hiAddr := (c.tmpAddr & 0xFF00) | uint16(byte(c.tmpAddr+1))
+			hi, err := bus.Read(hiAddr)
+			if err != nil {
+				return err
+			}
+			c.PC = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+	})
+	register(0x20, "JSR abs", 3, 6, []microOp{
+		func(bus *emulator.Bus) error {
+			lo, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error { return c.dummyReadStack(bus) },
+		func(bus *emulator.Bus) error { return c.pushByte(bus, byte(c.PC>>8)) },
+		func(bus *emulator.Bus) error {
+			if err := c.pushByte(bus, byte(c.PC)); err != nil {
+				return err
+			}
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.PC = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+	})
+
+	register(0xA9, "LDA #imm", 2, 2, c.immediateRead(loadA))
+	register(0xA5, "LDA zp", 2, 3, c.zeroPageRead(loadA))
+	register(0xB5, "LDA zp,X", 2, 4, c.zeroPageXRead(loadA))
+	register(0xAD, "LDA abs", 3, 4, c.absoluteRead(loadA))
+	register(0xBD, "LDA abs,X", 3, 4, c.absoluteXRead(loadA))
+	register(0xB9, "LDA abs,Y", 3, 4, c.absoluteYRead(loadA))
+	register(0xA1, "LDA (zp,X)", 2, 6, c.indirectXRead(loadA))
+	register(0xB1, "LDA (zp),Y", 2, 5, c.indirectYRead(loadA))
+
+	register(0xA2, "LDX #imm", 2, 2, c.immediateRead(loadX))
+	register(0xA6, "LDX zp", 2, 3, c.zeroPageRead(loadX))
+	register(0xB6, "LDX zp,Y", 2, 4, c.zeroPageYRead(loadX))
+	register(0xAE, "LDX abs", 3, 4, c.absoluteRead(loadX))
+	register(0xBE, "LDX abs,Y", 3, 4, c.absoluteYRead(loadX))
+
+	register(0xA0, "LDY #imm", 2, 2, c.immediateRead(loadY))
+	register(0xA4, "LDY zp", 2, 3, c.zeroPageRead(loadY))
+	register(0xB4, "LDY zp,X", 2, 4, c.zeroPageXRead(loadY))
+	register(0xAC, "LDY abs", 3, 4, c.absoluteRead(loadY))
+	register(0xBC, "LDY abs,X", 3, 4, c.absoluteXRead(loadY))
+
+	register(0x4A, "LSR A", 1, 2, c.accumulatorModify(c.lsr))
+	register(0x46, "LSR zp", 2, 5, c.zeroPageModify(c.lsr))
+	register(0x56, "LSR zp,X", 2, 6, c.zeroPageXModify(c.lsr))
+	register(0x4E, "LSR abs", 3, 6, c.absoluteModify(c.lsr))
+	register(0x5E, "LSR abs,X", 3, 7, c.absoluteXModify(c.lsr))
+
+	register(0x09, "ORA #imm", 2, 2, c.immediateRead(func(v byte) { loadA(c.A | v) }))
+	register(0x05, "ORA zp", 2, 3, c.zeroPageRead(func(v byte) { loadA(c.A | v) }))
+	register(0x15, "ORA zp,X", 2, 4, c.zeroPageXRead(func(v byte) { loadA(c.A | v) }))
+	register(0x0D, "ORA abs", 3, 4, c.absoluteRead(func(v byte) { loadA(c.A | v) }))
+	register(0x1D, "ORA abs,X", 3, 4, c.absoluteXRead(func(v byte) { loadA(c.A | v) }))
+	register(0x19, "ORA abs,Y", 3, 4, c.absoluteYRead(func(v byte) { loadA(c.A | v) }))
+	register(0x01, "ORA (zp,X)", 2, 6, c.indirectXRead(func(v byte) { loadA(c.A | v) }))
+	register(0x11, "ORA (zp),Y", 2, 5, c.indirectYRead(func(v byte) { loadA(c.A | v) }))
+
+	register(0x48, "PHA", 1, 3, []microOp{func(bus *emulator.Bus) error { return c.dummyReadPC(bus) }, func(bus *emulator.Bus) error { return c.pushByte(bus, c.A) }})
+	register(0x08, "PHP", 1, 3, []microOp{func(bus *emulator.Bus) error { return c.dummyReadPC(bus) }, func(bus *emulator.Bus) error { return c.pushByte(bus, c.status(true)) }})
+	register(0x68, "PLA", 1, 4, []microOp{func(bus *emulator.Bus) error { return c.dummyReadPC(bus) }, func(bus *emulator.Bus) error { return c.dummyReadStack(bus) }, func(bus *emulator.Bus) error {
+		v, err := c.pullByte(bus)
+		if err != nil {
+			return err
+		}
+		c.A = v
+		c.updateZN(c.A)
+		return nil
+	}})
+	register(0x28, "PLP", 1, 4, []microOp{func(bus *emulator.Bus) error { return c.dummyReadPC(bus) }, func(bus *emulator.Bus) error { return c.dummyReadStack(bus) }, func(bus *emulator.Bus) error {
+		v, err := c.pullByte(bus)
+		if err != nil {
+			return err
+		}
+		c.setStatus(v &^ flagB)
+		return nil
+	}})
+
+	register(0x2A, "ROL A", 1, 2, c.accumulatorModify(c.rol))
+	register(0x26, "ROL zp", 2, 5, c.zeroPageModify(c.rol))
+	register(0x36, "ROL zp,X", 2, 6, c.zeroPageXModify(c.rol))
+	register(0x2E, "ROL abs", 3, 6, c.absoluteModify(c.rol))
+	register(0x3E, "ROL abs,X", 3, 7, c.absoluteXModify(c.rol))
+
+	register(0x6A, "ROR A", 1, 2, c.accumulatorModify(c.ror))
+	register(0x66, "ROR zp", 2, 5, c.zeroPageModify(c.ror))
+	register(0x76, "ROR zp,X", 2, 6, c.zeroPageXModify(c.ror))
+	register(0x6E, "ROR abs", 3, 6, c.absoluteModify(c.ror))
+	register(0x7E, "ROR abs,X", 3, 7, c.absoluteXModify(c.ror))
+
+	register(0x40, "RTI", 1, 6, []microOp{
+		func(bus *emulator.Bus) error { return c.dummyReadPC(bus) },
+		func(bus *emulator.Bus) error { return c.dummyReadStack(bus) },
+		func(bus *emulator.Bus) error {
+			status, err := c.pullByte(bus)
+			if err != nil {
+				return err
+			}
+			c.setStatus(status &^ flagB)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			lo, err := c.pullByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.pullByte(bus)
+			if err != nil {
+				return err
+			}
+			c.PC = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+	})
+	register(0x60, "RTS", 1, 6, []microOp{
+		func(bus *emulator.Bus) error { return c.dummyReadPC(bus) },
+		func(bus *emulator.Bus) error { return c.dummyReadStack(bus) },
+		func(bus *emulator.Bus) error {
+			lo, err := c.pullByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := c.pullByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+		func(bus *emulator.Bus) error { return c.prefetch(bus, c.tmpAddr+1) },
+	})
+
+	register(0xE9, "SBC #imm", 2, 2, c.immediateRead(c.sbc))
+	register(0xE5, "SBC zp", 2, 3, c.zeroPageRead(c.sbc))
+	register(0xF5, "SBC zp,X", 2, 4, c.zeroPageXRead(c.sbc))
+	register(0xED, "SBC abs", 3, 4, c.absoluteRead(c.sbc))
+	register(0xFD, "SBC abs,X", 3, 4, c.absoluteXRead(c.sbc))
+	register(0xF9, "SBC abs,Y", 3, 4, c.absoluteYRead(c.sbc))
+	register(0xE1, "SBC (zp,X)", 2, 6, c.indirectXRead(c.sbc))
+	register(0xF1, "SBC (zp),Y", 2, 5, c.indirectYRead(c.sbc))
+
+	register(0x38, "SEC", 1, 2, c.implied(func() { c.setFlag(flagC, true) }))
+	register(0xF8, "SED", 1, 2, c.implied(func() { c.setFlag(flagD, true) }))
+	register(0x78, "SEI", 1, 2, c.implied(func() { c.setFlag(flagI, true) }))
+
+	register(0x85, "STA zp", 2, 3, c.zeroPageWrite(func() byte { return c.A }))
+	register(0x95, "STA zp,X", 2, 4, c.zeroPageXWrite(func() byte { return c.A }))
+	register(0x8D, "STA abs", 3, 4, c.absoluteWrite(func() byte { return c.A }))
+	register(0x9D, "STA abs,X", 3, 5, c.absoluteXWrite(func() byte { return c.A }))
+	register(0x99, "STA abs,Y", 3, 5, c.absoluteYWrite(func() byte { return c.A }))
+	register(0x81, "STA (zp,X)", 2, 6, c.indirectXWrite(func() byte { return c.A }))
+	register(0x91, "STA (zp),Y", 2, 6, c.indirectYWrite(func() byte { return c.A }))
+
+	register(0x86, "STX zp", 2, 3, c.zeroPageWrite(func() byte { return c.X }))
+	register(0x96, "STX zp,Y", 2, 4, c.zeroPageYWrite(func() byte { return c.X }))
+	register(0x8E, "STX abs", 3, 4, c.absoluteWrite(func() byte { return c.X }))
+
+	register(0x84, "STY zp", 2, 3, c.zeroPageWrite(func() byte { return c.Y }))
+	register(0x94, "STY zp,X", 2, 4, c.zeroPageXWrite(func() byte { return c.Y }))
+	register(0x8C, "STY abs", 3, 4, c.absoluteWrite(func() byte { return c.Y }))
+
+	register(0xAA, "TAX", 1, 2, c.implied(func() { loadX(c.A) }))
+	register(0xA8, "TAY", 1, 2, c.implied(func() { loadY(c.A) }))
+	register(0xBA, "TSX", 1, 2, c.implied(func() { loadX(c.SP) }))
+	register(0x8A, "TXA", 1, 2, c.implied(func() { loadA(c.X) }))
+	register(0x9A, "TXS", 1, 2, c.implied(func() { c.SP = c.X }))
+	register(0x98, "TYA", 1, 2, c.implied(func() { loadA(c.Y) }))
+}
