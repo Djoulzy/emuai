@@ -708,6 +708,73 @@ func (c *CPU6502) relativeBranch(condition func() bool) []microOp {
 	}
 }
 
+func (c *CPU6502) interruptSequence(vector uint16) []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error { return c.pushByte(bus, byte(c.PC>>8)) },
+		func(bus *emulator.Bus) error { return c.pushByte(bus, byte(c.PC)) },
+		func(bus *emulator.Bus) error {
+			if err := c.pushByte(bus, c.status(false)); err != nil {
+				return err
+			}
+			c.setFlag(flagI, true)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			lo, err := bus.Read(vector)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := bus.Read(vector + 1)
+			if err != nil {
+				return err
+			}
+			c.PC = uint16(hi)<<8 | uint16(c.tmp8)
+			return nil
+		},
+	}
+}
+
+func (c *CPU6502) brkSequence() []microOp {
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			_, err := c.fetchByte(bus)
+			return err
+		},
+		func(bus *emulator.Bus) error { return c.pushByte(bus, byte(c.PC>>8)) },
+		func(bus *emulator.Bus) error { return c.pushByte(bus, byte(c.PC)) },
+		func(bus *emulator.Bus) error {
+			if err := c.pushByte(bus, c.status(true)); err != nil {
+				return err
+			}
+			c.setFlag(flagI, true)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			lo, err := bus.Read(vectorIRQ)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = lo
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			hi, err := bus.Read(vectorIRQ + 1)
+			if err != nil {
+				return err
+			}
+			c.PC = uint16(hi)<<8 | uint16(c.tmp8)
+			if c.haltOnBRK {
+				c.halted = true
+			}
+			return nil
+		},
+	}
+}
+
 func (c *CPU6502) initLanguage() {
 	Opcode_6502 = make(map[byte]Instruction, 151)
 
@@ -728,11 +795,7 @@ func (c *CPU6502) initLanguage() {
 		c.updateZN(c.Y)
 	}
 
-	register(0x00, "BRK", 1, 7, []microOp{noopMicroOp, noopMicroOp, noopMicroOp, noopMicroOp, noopMicroOp, func(_ *emulator.Bus) error {
-		c.setFlag(flagB, true)
-		c.halted = true
-		return nil
-	}})
+	register(0x00, "BRK", 1, 7, c.brkSequence())
 	register(0xEA, "NOP", 1, 2, []microOp{noopMicroOp})
 
 	register(0x69, "ADC #imm", 2, 2, c.immediateRead(c.adc))

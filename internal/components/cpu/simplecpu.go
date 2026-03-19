@@ -16,6 +16,9 @@ const (
 	flagU byte = 1 << 5 // Unused, always set when pushed/restored
 	flagV byte = 1 << 6 // Overflow
 	flagN byte = 1 << 7 // Negative
+
+	vectorNMI uint16 = 0xFFFA
+	vectorIRQ uint16 = 0xFFFE
 )
 
 type microOp func(bus *emulator.Bus) error
@@ -48,10 +51,13 @@ type CPU6502 struct {
 	tmpBase        uint16
 	prefetchOpcode byte
 	hasPrefetch    bool
+	pendingIRQ     bool
+	pendingNMI     bool
+	haltOnBRK      bool
 }
 
 func NewCPU6502(name string, resetVector uint16) *CPU6502 {
-	newCPU := &CPU6502{name: name, resetVector: resetVector}
+	newCPU := &CPU6502{name: name, resetVector: resetVector, haltOnBRK: true}
 	newCPU.initLanguage()
 	return newCPU
 }
@@ -79,6 +85,8 @@ func (c *CPU6502) Reset(_ context.Context) error {
 	c.tmpBase = 0
 	c.prefetchOpcode = 0
 	c.hasPrefetch = false
+	c.pendingIRQ = false
+	c.pendingNMI = false
 	return nil
 }
 
@@ -89,6 +97,16 @@ func (c *CPU6502) Tick(_ context.Context, _ emulator.Tick, bus *emulator.Bus) er
 
 	// No current instruction means this cycle is the opcode fetch cycle.
 	if c.current == nil {
+		if instr := c.pendingInterruptInstruction(); instr != nil {
+			if c.hasPrefetch {
+				c.hasPrefetch = false
+			} else if err := c.dummyReadPC(bus); err != nil {
+				return err
+			}
+			c.current = instr
+			return nil
+		}
+
 		opcode := c.prefetchOpcode
 		if c.hasPrefetch {
 			c.hasPrefetch = false
@@ -194,6 +212,30 @@ func (c *CPU6502) prefetch(bus *emulator.Bus, addr uint16) error {
 	c.prefetchOpcode = opcode
 	c.hasPrefetch = true
 	c.PC = addr + 1
+	return nil
+}
+
+func (c *CPU6502) RequestIRQ() {
+	c.pendingIRQ = true
+}
+
+func (c *CPU6502) RequestNMI() {
+	c.pendingNMI = true
+}
+
+func (c *CPU6502) SetHaltOnBRK(enabled bool) {
+	c.haltOnBRK = enabled
+}
+
+func (c *CPU6502) pendingInterruptInstruction() *decodedInstruction {
+	if c.pendingNMI {
+		c.pendingNMI = false
+		return &decodedInstruction{name: "NMI", steps: c.interruptSequence(vectorNMI)}
+	}
+	if c.pendingIRQ && c.getFlag(flagI) == 0 {
+		c.pendingIRQ = false
+		return &decodedInstruction{name: "IRQ", steps: c.interruptSequence(vectorIRQ)}
+	}
 	return nil
 }
 

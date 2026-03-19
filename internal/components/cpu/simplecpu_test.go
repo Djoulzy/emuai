@@ -285,16 +285,17 @@ func TestCPU6502_StackAndSubroutineInstructions(t *testing.T) {
 	}
 
 	c, bus := newTestCPU(t, program)
+	writeBytes(t, bus, 0xFFFE, []byte{0x00, 0x40})
 	runUntilHalt(t, c, bus, 128)
 
 	if c.A != 0x11 {
 		t.Fatalf("expected A=0x11 after PLA, got 0x%02X", c.A)
 	}
-	if c.SP != 0xFD {
-		t.Fatalf("expected SP restored to 0xFD, got 0x%02X", c.SP)
+	if c.SP != 0xFA {
+		t.Fatalf("expected SP=0xFA after BRK stack push, got 0x%02X", c.SP)
 	}
-	if c.PC != 0x020A {
-		t.Fatalf("expected PC=0x020A after BRK fetch, got 0x%04X", c.PC)
+	if c.PC != 0x4000 {
+		t.Fatalf("expected PC=0x4000 after BRK vector load, got 0x%04X", c.PC)
 	}
 }
 
@@ -753,5 +754,111 @@ func TestCPU6502_StackAndSubroutineBusSequences(t *testing.T) {
 		if c.PC != 0x0204 {
 			t.Fatalf("expected PC=0x0204 after RTS prefetch, got 0x%04X", c.PC)
 		}
+	})
+}
+
+func TestCPU6502_InterruptBusSequences(t *testing.T) {
+	t.Run("BRK performs full interrupt sequence then halts", func(t *testing.T) {
+		c, bus, trace := newTraceCPUAt(t, 0x0200, []byte{0x00, 0xEA})
+		trace.data[0xFFFE] = 0x34
+		trace.data[0xFFFF] = 0x12
+
+		for cycle := uint64(0); cycle < 7; cycle++ {
+			tickOnce(t, c, bus, cycle)
+		}
+
+		assertTrace(t, trace.log, []traceAccess{
+			{kind: 'R', addr: 0x0200, value: 0x00},
+			{kind: 'R', addr: 0x0201, value: 0xEA},
+			{kind: 'W', addr: 0x01FD, value: 0x02},
+			{kind: 'W', addr: 0x01FC, value: 0x02},
+			{kind: 'W', addr: 0x01FB, value: flagI | flagU | flagB},
+			{kind: 'R', addr: 0xFFFE, value: 0x34},
+			{kind: 'R', addr: 0xFFFF, value: 0x12},
+		})
+		if !c.Halted() {
+			t.Fatalf("expected BRK to halt in compatibility mode")
+		}
+		if c.PC != 0x1234 {
+			t.Fatalf("expected BRK to load vector PC=0x1234 before halting, got 0x%04X", c.PC)
+		}
+	})
+
+	t.Run("IRQ uses dummy opcode fetch then vector", func(t *testing.T) {
+		c, bus, trace := newTraceCPUAt(t, 0x0200, []byte{0xEA})
+		c.setFlag(flagI, false)
+		c.RequestIRQ()
+		trace.data[0xFFFE] = 0x78
+		trace.data[0xFFFF] = 0x56
+
+		for cycle := uint64(0); cycle < 6; cycle++ {
+			tickOnce(t, c, bus, cycle)
+		}
+
+		assertTrace(t, trace.log, []traceAccess{
+			{kind: 'R', addr: 0x0200, value: 0xEA},
+			{kind: 'W', addr: 0x01FD, value: 0x02},
+			{kind: 'W', addr: 0x01FC, value: 0x00},
+			{kind: 'W', addr: 0x01FB, value: flagU},
+			{kind: 'R', addr: 0xFFFE, value: 0x78},
+			{kind: 'R', addr: 0xFFFF, value: 0x56},
+		})
+		if c.PC != 0x5678 {
+			t.Fatalf("expected IRQ vector PC=0x5678, got 0x%04X", c.PC)
+		}
+		if c.getFlag(flagI) == 0 {
+			t.Fatalf("expected IRQ sequence to set I flag")
+		}
+	})
+
+	t.Run("NMI has priority over IRQ", func(t *testing.T) {
+		c, bus, trace := newTraceCPUAt(t, 0x0200, []byte{0xEA})
+		c.setFlag(flagI, false)
+		c.RequestIRQ()
+		c.RequestNMI()
+		trace.data[0xFFFA] = 0xCD
+		trace.data[0xFFFB] = 0xAB
+
+		for cycle := uint64(0); cycle < 6; cycle++ {
+			tickOnce(t, c, bus, cycle)
+		}
+
+		if trace.reads[0xFFFA] != 1 || trace.reads[0xFFFB] != 1 {
+			t.Fatalf("expected NMI vector reads, got low=%d high=%d", trace.reads[0xFFFA], trace.reads[0xFFFB])
+		}
+		if trace.reads[0xFFFE] != 0 || trace.reads[0xFFFF] != 0 {
+			t.Fatalf("expected IRQ vector not to be used while NMI is pending")
+		}
+		if c.PC != 0xABCD {
+			t.Fatalf("expected NMI vector PC=0xABCD, got 0x%04X", c.PC)
+		}
+	})
+
+	t.Run("IRQ consumes RTS prefetch without extra bus read", func(t *testing.T) {
+		c, bus, trace := newTraceCPUAt(t, 0x0300, []byte{0x60, 0x00})
+		c.SP = 0xFB
+		trace.data[0x01FC] = 0x02
+		trace.data[0x01FD] = 0x02
+		trace.data[0x0203] = 0xEA
+		trace.data[0xFFFE] = 0x00
+		trace.data[0xFFFF] = 0x40
+
+		for cycle := uint64(0); cycle < 6; cycle++ {
+			tickOnce(t, c, bus, cycle)
+		}
+		countBefore := len(trace.log)
+		c.setFlag(flagI, false)
+		c.RequestIRQ()
+
+		tickOnce(t, c, bus, 6)
+		if len(trace.log) != countBefore {
+			t.Fatalf("expected pending IRQ to consume RTS prefetch without new bus access")
+		}
+
+		tickOnce(t, c, bus, 7)
+		assertTrace(t, trace.log[countBefore-1:], []traceAccess{
+			{kind: 'R', addr: 0x0203, value: 0xEA},
+			{kind: 'W', addr: 0x01FD, value: 0x02},
+		})
 	})
 }
