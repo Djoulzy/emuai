@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/Djoulzy/emuai/internal/emulator"
 )
@@ -61,6 +62,44 @@ func (r *RAM) Write(addr uint16, value byte) error {
 		return err
 	}
 	r.data[idx] = value
+	return nil
+}
+
+func (r *RAM) Load(addr uint16, data []byte) error {
+	if len(data) == 0 {
+		return nil
+	}
+
+	start, err := r.translate(addr)
+	if err != nil {
+		return err
+	}
+
+	end := start + len(data)
+	if end > len(r.data) {
+		return fmt.Errorf(
+			"ram: binary load out of range start=0x%04X len=%d end=0x%04X limit=0x%04X",
+			addr,
+			len(data),
+			addr+uint16(len(data))-1,
+			r.end,
+		)
+	}
+
+	copy(r.data[start:end], data)
+	return nil
+}
+
+func (r *RAM) LoadFile(path string, addr uint16) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("ram: read binary %q: %w", path, err)
+	}
+
+	if err := r.Load(addr, data); err != nil {
+		return fmt.Errorf("ram: load binary %q: %w", path, err)
+	}
+
 	return nil
 }
 

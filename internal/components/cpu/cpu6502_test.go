@@ -1,7 +1,9 @@
 package cpu
 
 import (
+	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/Djoulzy/emuai/internal/components/memory"
@@ -245,6 +247,28 @@ func TestCPU6502_InstructionResumesOnNextCycle(t *testing.T) {
 	}
 }
 
+func TestCPU6502_TraceWriter(t *testing.T) {
+	program := []byte{0xA9, 0x42, 0xAA, 0x00}
+	c, bus := newTestCPU(t, program)
+	writeBytes(t, bus, 0xFFFE, []byte{0x00, 0x40})
+
+	var trace bytes.Buffer
+	c.SetTraceWriter(&trace)
+
+	runUntilHalt(t, c, bus, 32)
+
+	got := strings.TrimSpace(trace.String())
+	want := strings.Join([]string{
+		"cycle=0 pc=0200 opcode=A9 instr=LDA #imm A=00 X=00 Y=00 SP=FD P=24 flags=..U..I..",
+		"cycle=2 pc=0202 opcode=AA instr=TAX A=42 X=00 Y=00 SP=FD P=24 flags=..U..I..",
+		"cycle=4 pc=0203 opcode=00 instr=BRK A=42 X=42 Y=00 SP=FD P=24 flags=..U..I..",
+	}, "\n")
+
+	if got != want {
+		t.Fatalf("unexpected trace output:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 func TestCPU6502_UnsupportedOpcode(t *testing.T) {
 	bus := emulator.NewBus()
 	ram, err := memory.NewRAM("ram", 0x0000, 0xFFFF)
@@ -297,6 +321,52 @@ func TestCPU6502_StackAndSubroutineInstructions(t *testing.T) {
 	if c.PC != 0x4000 {
 		t.Fatalf("expected PC=0x4000 after BRK vector load, got 0x%04X", c.PC)
 	}
+}
+
+func TestCPU6502_IncrementAndDecrementUpdateFlags(t *testing.T) {
+	t.Run("INC zero page sets zero flag", func(t *testing.T) {
+		program := []byte{0xE6, 0x10, 0x00}
+		c, bus := newTestCPU(t, program)
+		writeBytes(t, bus, 0x0010, []byte{0xFF})
+
+		runUntilHalt(t, c, bus, 32)
+
+		value, err := bus.Read(0x0010)
+		if err != nil {
+			t.Fatalf("read zero page: %v", err)
+		}
+		if value != 0x00 {
+			t.Fatalf("expected incremented value 0x00, got 0x%02X", value)
+		}
+		if c.getFlag(flagZ) == 0 {
+			t.Fatalf("expected zero flag set after INC wraps to zero")
+		}
+		if c.getFlag(flagN) != 0 {
+			t.Fatalf("expected negative flag clear after INC wraps to zero")
+		}
+	})
+
+	t.Run("DEC zero page sets negative flag", func(t *testing.T) {
+		program := []byte{0xC6, 0x10, 0x00}
+		c, bus := newTestCPU(t, program)
+		writeBytes(t, bus, 0x0010, []byte{0x00})
+
+		runUntilHalt(t, c, bus, 32)
+
+		value, err := bus.Read(0x0010)
+		if err != nil {
+			t.Fatalf("read zero page: %v", err)
+		}
+		if value != 0xFF {
+			t.Fatalf("expected decremented value 0xFF, got 0x%02X", value)
+		}
+		if c.getFlag(flagN) == 0 {
+			t.Fatalf("expected negative flag set after DEC underflows to 0xFF")
+		}
+		if c.getFlag(flagZ) != 0 {
+			t.Fatalf("expected zero flag clear after DEC underflows to 0xFF")
+		}
+	})
 }
 
 func TestCPU6502_BranchesAndComparisons(t *testing.T) {

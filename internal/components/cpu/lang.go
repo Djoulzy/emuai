@@ -856,10 +856,10 @@ func (c *CPU6502) initLanguage() {
 	register(0xC4, "CPY zp", 2, 3, c.zeroPageRead(func(v byte) { c.compare(c.Y, v) }))
 	register(0xCC, "CPY abs", 3, 4, c.absoluteRead(func(v byte) { c.compare(c.Y, v) }))
 
-	register(0xC6, "DEC zp", 2, 5, c.zeroPageModify(func(v byte) byte { return v - 1 }))
-	register(0xD6, "DEC zp,X", 2, 6, c.zeroPageXModify(func(v byte) byte { return v - 1 }))
-	register(0xCE, "DEC abs", 3, 6, c.absoluteModify(func(v byte) byte { return v - 1 }))
-	register(0xDE, "DEC abs,X", 3, 7, c.absoluteXModify(func(v byte) byte { return v - 1 }))
+	register(0xC6, "DEC zp", 2, 5, c.zeroPageModify(c.dec))
+	register(0xD6, "DEC zp,X", 2, 6, c.zeroPageXModify(c.dec))
+	register(0xCE, "DEC abs", 3, 6, c.absoluteModify(c.dec))
+	register(0xDE, "DEC abs,X", 3, 7, c.absoluteXModify(c.dec))
 
 	register(0xCA, "DEX", 1, 2, c.implied(func() { c.X--; c.updateZN(c.X) }))
 	register(0x88, "DEY", 1, 2, c.implied(func() { c.Y--; c.updateZN(c.Y) }))
@@ -873,10 +873,10 @@ func (c *CPU6502) initLanguage() {
 	register(0x41, "EOR (zp,X)", 2, 6, c.indirectXRead(func(v byte) { loadA(c.A ^ v) }))
 	register(0x51, "EOR (zp),Y", 2, 5, c.indirectYRead(func(v byte) { loadA(c.A ^ v) }))
 
-	register(0xE6, "INC zp", 2, 5, c.zeroPageModify(func(v byte) byte { return v + 1 }))
-	register(0xF6, "INC zp,X", 2, 6, c.zeroPageXModify(func(v byte) byte { return v + 1 }))
-	register(0xEE, "INC abs", 3, 6, c.absoluteModify(func(v byte) byte { return v + 1 }))
-	register(0xFE, "INC abs,X", 3, 7, c.absoluteXModify(func(v byte) byte { return v + 1 }))
+	register(0xE6, "INC zp", 2, 5, c.zeroPageModify(c.inc))
+	register(0xF6, "INC zp,X", 2, 6, c.zeroPageXModify(c.inc))
+	register(0xEE, "INC abs", 3, 6, c.absoluteModify(c.inc))
+	register(0xFE, "INC abs,X", 3, 7, c.absoluteXModify(c.inc))
 
 	register(0xE8, "INX", 1, 2, c.implied(func() { c.X++; c.updateZN(c.X) }))
 	register(0xC8, "INY", 1, 2, c.implied(func() { c.Y++; c.updateZN(c.Y) }))

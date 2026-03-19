@@ -3,6 +3,7 @@ package cpu
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/Djoulzy/emuai/internal/emulator"
 )
@@ -54,17 +55,13 @@ type CPU6502 struct {
 	pendingIRQ     bool
 	pendingNMI     bool
 	haltOnBRK      bool
+	traceWriter    io.Writer
 }
 
 func NewCPU6502(name string, resetVector uint16) *CPU6502 {
 	newCPU := &CPU6502{name: name, resetVector: resetVector, haltOnBRK: true}
 	newCPU.initLanguage()
 	return newCPU
-}
-
-// Kept for backward compatibility with initial scaffold.
-func NewSimpleCPU(name string, resetVector uint16) *CPU6502 {
-	return NewCPU6502(name, resetVector)
 }
 
 func (c *CPU6502) Name() string {
@@ -90,7 +87,7 @@ func (c *CPU6502) Reset(_ context.Context) error {
 	return nil
 }
 
-func (c *CPU6502) Tick(_ context.Context, _ emulator.Tick, bus *emulator.Bus) error {
+func (c *CPU6502) Tick(_ context.Context, tick emulator.Tick, bus *emulator.Bus) error {
 	if c.halted {
 		return nil
 	}
@@ -98,6 +95,7 @@ func (c *CPU6502) Tick(_ context.Context, _ emulator.Tick, bus *emulator.Bus) er
 	// No current instruction means this cycle is the opcode fetch cycle.
 	if c.current == nil {
 		if instr := c.pendingInterruptInstruction(); instr != nil {
+			c.traceInterrupt(tick.Cycle, c.PC, instr.name)
 			if c.hasPrefetch {
 				c.hasPrefetch = false
 			} else if err := c.dummyReadPC(bus); err != nil {
@@ -107,8 +105,10 @@ func (c *CPU6502) Tick(_ context.Context, _ emulator.Tick, bus *emulator.Bus) er
 			return nil
 		}
 
+		instructionPC := c.PC
 		opcode := c.prefetchOpcode
 		if c.hasPrefetch {
+			instructionPC = c.PC - 1
 			c.hasPrefetch = false
 		} else {
 			var err error
@@ -122,6 +122,7 @@ func (c *CPU6502) Tick(_ context.Context, _ emulator.Tick, bus *emulator.Bus) er
 		if err != nil {
 			return err
 		}
+		c.traceInstruction(tick.Cycle, instructionPC, opcode, instr)
 		c.current = instr
 		return nil
 	}
@@ -227,6 +228,10 @@ func (c *CPU6502) SetHaltOnBRK(enabled bool) {
 	c.haltOnBRK = enabled
 }
 
+func (c *CPU6502) SetTraceWriter(w io.Writer) {
+	c.traceWriter = w
+}
+
 func (c *CPU6502) pendingInterruptInstruction() *decodedInstruction {
 	if c.pendingNMI {
 		c.pendingNMI = false
@@ -298,6 +303,18 @@ func (c *CPU6502) bit(v byte) {
 	c.setFlag(flagN, v&flagN != 0)
 }
 
+func (c *CPU6502) inc(v byte) byte {
+	out := v + 1
+	c.updateZN(out)
+	return out
+}
+
+func (c *CPU6502) dec(v byte) byte {
+	out := v - 1
+	c.updateZN(out)
+	return out
+}
+
 func (c *CPU6502) branch(offset byte) {
 	c.PC = uint16(int32(c.PC) + int32(int8(offset)))
 }
@@ -345,6 +362,74 @@ func (c *CPU6502) ror(v byte) byte {
 
 func (c *CPU6502) Halted() bool {
 	return c.halted
+}
+
+func (c *CPU6502) flagStatusString() string {
+	flags := []struct {
+		mask  byte
+		label byte
+	}{
+		{mask: flagN, label: 'N'},
+		{mask: flagV, label: 'V'},
+		{mask: flagU, label: 'U'},
+		{mask: flagB, label: 'B'},
+		{mask: flagD, label: 'D'},
+		{mask: flagI, label: 'I'},
+		{mask: flagZ, label: 'Z'},
+		{mask: flagC, label: 'C'},
+	}
+
+	status := make([]byte, len(flags))
+	for i, flag := range flags {
+		if c.P&flag.mask != 0 {
+			status[i] = flag.label
+			continue
+		}
+		status[i] = '.'
+	}
+
+	return string(status)
+}
+
+func (c *CPU6502) traceInstruction(cycle uint64, pc uint16, opcode byte, instr *decodedInstruction) {
+	if c.traceWriter == nil || instr == nil {
+		return
+	}
+
+	_, _ = fmt.Fprintf(
+		c.traceWriter,
+		"cycle=%d pc=%04X opcode=%02X instr=%s A=%02X X=%02X Y=%02X SP=%02X P=%02X flags=%s\n",
+		cycle,
+		pc,
+		opcode,
+		instr.name,
+		c.A,
+		c.X,
+		c.Y,
+		c.SP,
+		c.P,
+		c.flagStatusString(),
+	)
+}
+
+func (c *CPU6502) traceInterrupt(cycle uint64, pc uint16, name string) {
+	if c.traceWriter == nil {
+		return
+	}
+
+	_, _ = fmt.Fprintf(
+		c.traceWriter,
+		"cycle=%d pc=%04X instr=%s A=%02X X=%02X Y=%02X SP=%02X P=%02X flags=%s\n",
+		cycle,
+		pc,
+		name,
+		c.A,
+		c.X,
+		c.Y,
+		c.SP,
+		c.P,
+		c.flagStatusString(),
+	)
 }
 
 func (c *CPU6502) decode(opcode byte) (*decodedInstruction, error) {
