@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
+	"time"
 
 	"github.com/Djoulzy/emuai/internal/components/cpu"
 	"github.com/Djoulzy/emuai/internal/components/memory"
@@ -16,11 +19,63 @@ import (
 	"github.com/Djoulzy/emuai/internal/components/sound"
 	"github.com/Djoulzy/emuai/internal/components/video"
 	"github.com/Djoulzy/emuai/internal/emulator"
+	"golang.org/x/sys/unix"
+	"golang.org/x/term"
+)
+
+const (
+	motherboardFrequencyHz = 1_000_000
+	pausePollInterval      = 25 * time.Millisecond
 )
 
 type uint16Flag struct {
 	value uint16
 	set   bool
+}
+
+type runControl struct {
+	paused atomic.Bool
+}
+
+func (c *runControl) Paused() bool {
+	if c == nil {
+		return false
+	}
+	return c.paused.Load()
+}
+
+func (c *runControl) SetPaused(paused bool) {
+	if c == nil {
+		return
+	}
+	c.paused.Store(paused)
+}
+
+func (c *runControl) TogglePaused() bool {
+	if c == nil {
+		return false
+	}
+
+	paused := !c.paused.Load()
+	c.paused.Store(paused)
+	return paused
+}
+
+func processControlKey(control *runControl, quit func(), key byte) string {
+	switch key {
+	case ' ':
+		if control.TogglePaused() {
+			return "pause"
+		}
+		return "resume"
+	case 'q', 'Q':
+		if quit != nil {
+			quit()
+		}
+		return "quit"
+	default:
+		return ""
+	}
 }
 
 func (f *uint16Flag) String() string {
@@ -55,7 +110,7 @@ func main() {
 		entryPoint = pcAddr.value
 	}
 
-	board, err := emulator.NewMotherboard(emulator.Config{FrequencyHz: 1_000_000})
+	board, err := emulator.NewMotherboard(emulator.Config{FrequencyHz: motherboardFrequencyHz})
 	if err != nil {
 		log.Fatalf("create motherboard: %v", err)
 	}
@@ -94,12 +149,26 @@ func main() {
 		}
 	}
 
-	ctx := context.Background()
-	cancel := func() {}
-	if *timeout > 0 {
-		ctx, cancel = context.WithTimeout(ctx, *timeout)
-	}
+	baseCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stopSignals()
+
+	ctx, cancel := context.WithCancel(baseCtx)
 	defer cancel()
+
+	if *timeout > 0 {
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(ctx, *timeout)
+		defer timeoutCancel()
+	}
+
+	control := &runControl{}
+	stopPauseControls, err := startPauseControls(control, cancel)
+	if err != nil {
+		log.Printf("pause controls disabled: %v", err)
+	} else {
+		defer stopPauseControls()
+		log.Printf("interactive controls: press space to pause/resume, q to quit, Ctrl+C to interrupt")
+	}
 
 	if err := board.Reset(ctx); err != nil {
 		log.Fatalf("reset board: %v", err)
@@ -130,16 +199,18 @@ func main() {
 		log.Printf("loaded built-in demo at 0x%04X, entry point 0x%04X", loadAddr.value, entryPoint)
 	}
 
-	if err := runMachine(ctx, board, processor, *realtime, *maxCycles); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+	if err := runMachine(ctx, board, processor, *realtime, *maxCycles, control); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		log.Fatalf("run board: %v", err)
 	}
 
 	log.Printf("emulation stopped after %d cycles", board.Cycle())
 }
 
-func runMachine(ctx context.Context, board *emulator.Motherboard, processor *cpu.CPU6502, realtime bool, maxCycles uint64) error {
+func runMachine(ctx context.Context, board *emulator.Motherboard, processor *cpu.CPU6502, realtime bool, maxCycles uint64, control *runControl) error {
+	var ticker *time.Ticker
 	if realtime {
-		return board.Run(ctx)
+		ticker = time.NewTicker(time.Second / time.Duration(motherboardFrequencyHz))
+		defer ticker.Stop()
 	}
 
 	for {
@@ -155,8 +226,98 @@ func runMachine(ctx context.Context, board *emulator.Motherboard, processor *cpu
 			return nil
 		}
 
+		if err := waitWhilePaused(ctx, control); err != nil {
+			return err
+		}
+
+		if ticker != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+			}
+		}
+
 		if err := board.Step(ctx); err != nil {
 			return err
 		}
 	}
+}
+
+func waitWhilePaused(ctx context.Context, control *runControl) error {
+	for control != nil && control.Paused() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		time.Sleep(pausePollInterval)
+	}
+
+	return nil
+}
+
+func startPauseControls(control *runControl, quit func()) (func(), error) {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return func() {}, nil
+	}
+
+	fd := int(tty.Fd())
+	if !term.IsTerminal(fd) {
+		_ = tty.Close()
+		return func() {}, nil
+	}
+
+	state, err := term.GetState(fd)
+	if err != nil {
+		_ = tty.Close()
+		return nil, fmt.Errorf("snapshot terminal state: %w", err)
+	}
+
+	termios, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
+	if err != nil {
+		_ = tty.Close()
+		return nil, fmt.Errorf("read terminal state: %w", err)
+	}
+
+	configured := *termios
+	configured.Iflag |= unix.ICRNL | unix.IXON
+	configured.Oflag |= unix.OPOST | unix.ONLCR
+	configured.Lflag |= unix.ISIG
+	configured.Lflag &^= unix.ICANON | unix.ECHO
+	configured.Cc[unix.VMIN] = 1
+	configured.Cc[unix.VTIME] = 0
+	if err := unix.IoctlSetTermios(fd, unix.TIOCSETA, &configured); err != nil {
+		_ = tty.Close()
+		return nil, fmt.Errorf("configure pause controls: %w", err)
+	}
+
+	doneCh := make(chan struct{})
+
+	go func() {
+		defer close(doneCh)
+
+		buffer := make([]byte, 1)
+		for {
+			_, err := tty.Read(buffer)
+			if err != nil {
+				return
+			}
+
+			switch processControlKey(control, quit, buffer[0]) {
+			case "pause":
+				log.Printf("execution paused")
+			case "resume":
+				log.Printf("execution resumed")
+			case "quit":
+				log.Printf("execution stopping")
+				return
+			}
+		}
+	}()
+
+	return func() {
+		_ = term.Restore(fd, state)
+		_ = tty.Close()
+		<-doneCh
+	}, nil
 }

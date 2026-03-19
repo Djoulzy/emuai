@@ -3,6 +3,7 @@ package cpu
 import (
 	"bytes"
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -257,11 +258,13 @@ func TestCPU6502_TraceWriter(t *testing.T) {
 
 	runUntilHalt(t, c, bus, 32)
 
-	got := strings.TrimSpace(trace.String())
+	ansiPattern := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	got := strings.TrimSpace(ansiPattern.ReplaceAllString(trace.String(), ""))
 	want := strings.Join([]string{
-		"cycle=0 pc=0200 opcode=A9 instr=LDA #imm A=00 X=00 Y=00 SP=FD P=24 flags=..U..I..",
-		"cycle=2 pc=0202 opcode=AA instr=TAX A=42 X=00 Y=00 SP=FD P=24 flags=..U..I..",
-		"cycle=4 pc=0203 opcode=00 instr=BRK A=42 X=42 Y=00 SP=FD P=24 flags=..U..I..",
+		"CYC     PC     BYTES     ASM                 REGS FLAGS",
+		"0       $0200  A9 42     LDA  #$42           A:00 X:00 Y:00 SP:FD P:24 ..U..I..",
+		"2       $0202  AA        TAX                 A:42 X:00 Y:00 SP:FD P:24 ..U..I..",
+		"4       $0203  00        BRK                 A:42 X:42 Y:00 SP:FD P:24 ..U..I..",
 	}, "\n")
 
 	if got != want {

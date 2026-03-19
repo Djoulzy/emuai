@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/Djoulzy/emuai/internal/emulator"
 )
@@ -27,8 +28,26 @@ type microOp func(bus *emulator.Bus) error
 type decodedInstruction struct {
 	opcode byte
 	name   string
+	bytes  byte
 	step   int
 	steps  []microOp
+}
+
+const (
+	traceAnsiReset     = "\x1b[0m"
+	traceAnsiDim       = "\x1b[38;5;244m"
+	traceAnsiPC        = "\x1b[38;5;81m"
+	traceAnsiBytes     = "\x1b[38;5;214m"
+	traceAnsiMnemonic  = "\x1b[1;38;5;120m"
+	traceAnsiOperand   = "\x1b[38;5;223m"
+	traceAnsiRegister  = "\x1b[38;5;45m"
+	traceAnsiFlags     = "\x1b[38;5;178m"
+	traceAnsiInterrupt = "\x1b[1;38;5;203m"
+)
+
+type traceByte struct {
+	value byte
+	valid bool
 }
 
 // CPU6502 is a cycle-sliced skeleton for a MOS 6502-like core.
@@ -56,6 +75,7 @@ type CPU6502 struct {
 	pendingNMI     bool
 	haltOnBRK      bool
 	traceWriter    io.Writer
+	traceHeaderOut bool
 }
 
 func NewCPU6502(name string, resetVector uint16) *CPU6502 {
@@ -84,6 +104,7 @@ func (c *CPU6502) Reset(_ context.Context) error {
 	c.hasPrefetch = false
 	c.pendingIRQ = false
 	c.pendingNMI = false
+	c.traceHeaderOut = false
 	return nil
 }
 
@@ -122,7 +143,7 @@ func (c *CPU6502) Tick(_ context.Context, tick emulator.Tick, bus *emulator.Bus)
 		if err != nil {
 			return err
 		}
-		c.traceInstruction(tick.Cycle, instructionPC, opcode, instr)
+		c.traceInstruction(tick.Cycle, instructionPC, opcode, instr, bus)
 		c.current = instr
 		return nil
 	}
@@ -230,6 +251,7 @@ func (c *CPU6502) SetHaltOnBRK(enabled bool) {
 
 func (c *CPU6502) SetTraceWriter(w io.Writer) {
 	c.traceWriter = w
+	c.traceHeaderOut = false
 }
 
 func (c *CPU6502) pendingInterruptInstruction() *decodedInstruction {
@@ -391,24 +413,24 @@ func (c *CPU6502) flagStatusString() string {
 	return string(status)
 }
 
-func (c *CPU6502) traceInstruction(cycle uint64, pc uint16, opcode byte, instr *decodedInstruction) {
+func (c *CPU6502) traceInstruction(cycle uint64, pc uint16, opcode byte, instr *decodedInstruction, bus *emulator.Bus) {
 	if c.traceWriter == nil || instr == nil {
 		return
 	}
 
+	c.writeTraceHeader()
+	rawBytes := c.traceRawBytes(opcode, c.traceOperandBytes(bus, pc, instr.bytes))
+	mnemonic, operand := c.traceAssembly(instr, pc, bus)
 	_, _ = fmt.Fprintf(
 		c.traceWriter,
-		"cycle=%d pc=%04X opcode=%02X instr=%s A=%02X X=%02X Y=%02X SP=%02X P=%02X flags=%s\n",
-		cycle,
-		pc,
-		opcode,
-		instr.name,
-		c.A,
-		c.X,
-		c.Y,
-		c.SP,
-		c.P,
-		c.flagStatusString(),
+		"%s  %s  %s  %s %s  %s %s\n",
+		c.traceColor(traceAnsiDim, fmt.Sprintf("%-6d", cycle)),
+		c.traceColor(traceAnsiPC, fmt.Sprintf("%-5s", fmt.Sprintf("$%04X", pc))),
+		c.traceColor(traceAnsiBytes, fmt.Sprintf("%-8s", rawBytes)),
+		c.traceColor(traceAnsiMnemonic, fmt.Sprintf("%-4s", mnemonic)),
+		c.traceColor(traceAnsiOperand, fmt.Sprintf("%-13s", operand)),
+		c.traceRegisterState(),
+		c.traceColor(traceAnsiFlags, c.flagStatusString()),
 	)
 }
 
@@ -417,24 +439,158 @@ func (c *CPU6502) traceInterrupt(cycle uint64, pc uint16, name string) {
 		return
 	}
 
+	c.writeTraceHeader()
 	_, _ = fmt.Fprintf(
 		c.traceWriter,
-		"cycle=%d pc=%04X instr=%s A=%02X X=%02X Y=%02X SP=%02X P=%02X flags=%s\n",
-		cycle,
-		pc,
-		name,
-		c.A,
-		c.X,
-		c.Y,
-		c.SP,
-		c.P,
-		c.flagStatusString(),
+		"%s  %s  %s  %s  %s %s\n",
+		c.traceColor(traceAnsiDim, fmt.Sprintf("%-6d", cycle)),
+		c.traceColor(traceAnsiPC, fmt.Sprintf("%-5s", fmt.Sprintf("$%04X", pc))),
+		c.traceColor(traceAnsiBytes, fmt.Sprintf("%-8s", "")),
+		c.traceColor(traceAnsiInterrupt, fmt.Sprintf("%-18s", name)),
+		c.traceRegisterState(),
+		c.traceColor(traceAnsiFlags, c.flagStatusString()),
 	)
+}
+
+func (c *CPU6502) writeTraceHeader() {
+	if c.traceWriter == nil || c.traceHeaderOut {
+		return
+	}
+
+	_, _ = fmt.Fprintf(
+		c.traceWriter,
+		"%s  %s  %s  %s  %s %s\n",
+		c.traceColor(traceAnsiDim, fmt.Sprintf("%-6s", "CYC")),
+		c.traceColor(traceAnsiPC, fmt.Sprintf("%-5s", "PC")),
+		c.traceColor(traceAnsiBytes, fmt.Sprintf("%-8s", "BYTES")),
+		c.traceColor(traceAnsiMnemonic, fmt.Sprintf("%-18s", "ASM")),
+		c.traceColor(traceAnsiRegister, "REGS"),
+		c.traceColor(traceAnsiFlags, "FLAGS"),
+	)
+	c.traceHeaderOut = true
+}
+
+func (c *CPU6502) traceRegisterState() string {
+	return strings.Join([]string{
+		c.traceColor(traceAnsiRegister, fmt.Sprintf("A:%02X", c.A)),
+		c.traceColor(traceAnsiRegister, fmt.Sprintf("X:%02X", c.X)),
+		c.traceColor(traceAnsiRegister, fmt.Sprintf("Y:%02X", c.Y)),
+		c.traceColor(traceAnsiRegister, fmt.Sprintf("SP:%02X", c.SP)),
+		c.traceColor(traceAnsiRegister, fmt.Sprintf("P:%02X", c.P)),
+	}, " ")
+}
+
+func (c *CPU6502) traceOperandBytes(bus *emulator.Bus, pc uint16, instructionBytes byte) []traceByte {
+	if bus == nil || instructionBytes <= 1 {
+		return nil
+	}
+
+	operands := make([]traceByte, 0, instructionBytes-1)
+	for offset := byte(1); offset < instructionBytes; offset++ {
+		value, err := bus.Read(pc + uint16(offset))
+		if err != nil {
+			operands = append(operands, traceByte{})
+			continue
+		}
+		operands = append(operands, traceByte{value: value, valid: true})
+	}
+
+	return operands
+}
+
+func (c *CPU6502) traceRawBytes(opcode byte, operands []traceByte) string {
+	parts := []string{fmt.Sprintf("%02X", opcode)}
+	for _, operand := range operands {
+		if operand.valid {
+			parts = append(parts, fmt.Sprintf("%02X", operand.value))
+			continue
+		}
+		parts = append(parts, "??")
+	}
+	return strings.Join(parts, " ")
+}
+
+func (c *CPU6502) traceAssembly(instr *decodedInstruction, pc uint16, bus *emulator.Bus) (string, string) {
+	if instr == nil {
+		return "???", ""
+	}
+
+	parts := strings.SplitN(instr.name, " ", 2)
+	mnemonic := parts[0]
+	operands := c.traceOperandBytes(bus, pc, instr.bytes)
+	if len(parts) == 1 {
+		if c.isBranchMnemonic(mnemonic) {
+			if len(operands) == 0 || !operands[0].valid {
+				return mnemonic, "?"
+			}
+			target := uint16(int32(pc) + int32(instr.bytes) + int32(int8(operands[0].value)))
+			return mnemonic, fmt.Sprintf("$%04X", target)
+		}
+		return mnemonic, ""
+	}
+
+	switch parts[1] {
+	case "#imm":
+		if len(operands) < 1 || !operands[0].valid {
+			return mnemonic, "#$??"
+		}
+		return mnemonic, fmt.Sprintf("#$%02X", operands[0].value)
+	case "zp":
+		return mnemonic, c.traceFormatZeroPage("$%s", operands)
+	case "zp,X":
+		return mnemonic, c.traceFormatZeroPage("$%s,X", operands)
+	case "zp,Y":
+		return mnemonic, c.traceFormatZeroPage("$%s,Y", operands)
+	case "abs":
+		return mnemonic, c.traceFormatAbsolute("$%s", operands)
+	case "abs,X":
+		return mnemonic, c.traceFormatAbsolute("$%s,X", operands)
+	case "abs,Y":
+		return mnemonic, c.traceFormatAbsolute("$%s,Y", operands)
+	case "(zp,X)":
+		return mnemonic, c.traceFormatZeroPage("($%s,X)", operands)
+	case "(zp),Y":
+		return mnemonic, c.traceFormatZeroPage("($%s),Y", operands)
+	case "ind":
+		return mnemonic, c.traceFormatAbsolute("($%s)", operands)
+	case "A":
+		return mnemonic, "A"
+	default:
+		return mnemonic, parts[1]
+	}
+}
+
+func (c *CPU6502) traceFormatZeroPage(pattern string, operands []traceByte) string {
+	if len(operands) < 1 || !operands[0].valid {
+		return fmt.Sprintf(pattern, "??")
+	}
+	return fmt.Sprintf(pattern, fmt.Sprintf("%02X", operands[0].value))
+}
+
+func (c *CPU6502) traceFormatAbsolute(pattern string, operands []traceByte) string {
+	if len(operands) < 2 || !operands[0].valid || !operands[1].valid {
+		return fmt.Sprintf(pattern, "????")
+	}
+	value := uint16(operands[1].value)<<8 | uint16(operands[0].value)
+	return fmt.Sprintf(pattern, fmt.Sprintf("%04X", value))
+}
+
+func (c *CPU6502) isBranchMnemonic(mnemonic string) bool {
+	switch mnemonic {
+	case "BCC", "BCS", "BEQ", "BMI", "BNE", "BPL", "BVC", "BVS":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *CPU6502) traceColor(code, text string) string {
+	return code + text + traceAnsiReset
 }
 
 func (c *CPU6502) decode(opcode byte) (*decodedInstruction, error) {
 	if instr, ok := Opcode_6502[opcode]; ok {
-		return &decodedInstruction{opcode: opcode, name: instr.Name, steps: instr.action}, nil
+		return &decodedInstruction{opcode: opcode, name: instr.Name, bytes: instr.Bytes, steps: instr.action}, nil
 	}
 	return nil, fmt.Errorf("cpu6502: unsupported opcode 0x%02X at PC=0x%04X", opcode, c.PC-1)
 }
