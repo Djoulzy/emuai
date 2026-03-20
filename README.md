@@ -35,6 +35,15 @@ Modular 8-bit machine emulator scaffold in Go.
 - Use `go run ./cmd/emuai -trace` to print each 6502 instruction as it starts executing.
 - Each trace line includes the motherboard cycle, program counter, a `FLOW` marker (`NEW` on first visit, `SEEN#n` on revisits), opcode bytes, mnemonic, CPU registers, the raw `P` value, and a decoded `flags=NVUBDIZC` view where unset flags are shown as `.`.
 
+## Video Backends
+
+- Use `-video-backend null` for the current no-op renderer.
+- Use `-video-backend vulkan` with `-tags vulkan` to open a basic GLFW window backed by a Vulkan instance and surface.
+- The current Vulkan backend stops at window, instance, and surface bring-up; the swapchain upload path and CRT shader pipeline are still pending.
+- Example: `go run -tags vulkan ./cmd/emuai -video-backend vulkan`.
+- Tune the base framebuffer with `-video-width`, `-video-height`, and `-video-refresh-hz`.
+- The video package now contains a CRT-oriented configuration model, a framebuffer snapshot pipeline, and a renderer interface ready to host a Vulkan pass chain for phosphor persistence, scanlines, mask simulation, and curvature.
+
 ## Running A Binary
 
 - Use `go run ./cmd/emuai -bin assets/6502_functional_test.bin -load-addr 0x0400` to load a raw binary into RAM and execute it from that address.

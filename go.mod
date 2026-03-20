@@ -6,3 +6,8 @@ require (
 	golang.org/x/sys v0.42.0
 	golang.org/x/term v0.41.0
 )
+
+require (
+	github.com/go-gl/glfw/v3.3/glfw v0.0.0-20250301202403-da16c1255728 // indirect
+	github.com/vulkan-go/vulkan v0.0.0-20221209234627-c0a353ae26c8 // indirect
+)

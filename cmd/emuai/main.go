@@ -100,6 +100,10 @@ func main() {
 	maxCycles := flag.Uint64("max-cycles", 0, "maximum number of motherboard cycles to execute; 0 disables the limit")
 	stopPC := &uint16Flag{}
 	realtime := flag.Bool("realtime", false, "run using the motherboard clock instead of stepping as fast as possible")
+	videoBackend := flag.String("video-backend", string(video.BackendNull), "video backend to use: null or vulkan")
+	videoWidth := flag.Int("video-width", 320, "video framebuffer width in pixels")
+	videoHeight := flag.Int("video-height", 240, "video framebuffer height in pixels")
+	videoRefreshHz := flag.Int("video-refresh-hz", 60, "video refresh rate in Hz")
 	loadAddr := &uint16Flag{value: 0x0200}
 	pcAddr := &uint16Flag{}
 	flag.Var(stopPC, "stop-pc", "stop execution before the instruction at this program counter executes")
@@ -137,10 +141,23 @@ func main() {
 		processor.SetTraceWriter(os.Stdout)
 	}
 
+	videoDevice, err := video.NewDevice("video-main", video.Config{
+		Backend: video.Backend(*videoBackend),
+		ClockHz: motherboardFrequencyHz,
+		CRT: video.CRTConfig{
+			Width:     *videoWidth,
+			Height:    *videoHeight,
+			RefreshHz: *videoRefreshHz,
+		},
+	})
+	if err != nil {
+		log.Fatalf("create video: %v", err)
+	}
+
 	components := []emulator.ClockedComponent{
 		ram,
 		processor,
-		video.NewNullVideo("video-main"),
+		videoDevice,
 		sound.NewNullSound("sound-main"),
 		peripheral.NewKeyboard("kbd-main"),
 	}
