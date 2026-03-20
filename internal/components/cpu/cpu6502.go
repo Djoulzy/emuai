@@ -37,6 +37,7 @@ const (
 	traceAnsiReset     = "\x1b[0m"
 	traceAnsiDim       = "\x1b[38;5;244m"
 	traceAnsiPC        = "\x1b[38;5;81m"
+	traceAnsiVisit     = "\x1b[1;30;103m"
 	traceAnsiBytes     = "\x1b[38;5;214m"
 	traceAnsiMnemonic  = "\x1b[1;38;5;120m"
 	traceAnsiOperand   = "\x1b[38;5;223m"
@@ -76,6 +77,7 @@ type CPU6502 struct {
 	haltOnBRK      bool
 	traceWriter    io.Writer
 	traceHeaderOut bool
+	traceVisitedPC map[uint16]uint32
 }
 
 func NewCPU6502(name string, resetVector uint16) *CPU6502 {
@@ -105,6 +107,7 @@ func (c *CPU6502) Reset(_ context.Context) error {
 	c.pendingIRQ = false
 	c.pendingNMI = false
 	c.traceHeaderOut = false
+	c.traceVisitedPC = make(map[uint16]uint32)
 	return nil
 }
 
@@ -252,6 +255,7 @@ func (c *CPU6502) SetHaltOnBRK(enabled bool) {
 func (c *CPU6502) SetTraceWriter(w io.Writer) {
 	c.traceWriter = w
 	c.traceHeaderOut = false
+	c.traceVisitedPC = make(map[uint16]uint32)
 }
 
 func (c *CPU6502) pendingInterruptInstruction() *decodedInstruction {
@@ -300,17 +304,62 @@ func (c *CPU6502) getFlag(flag byte) byte {
 
 func (c *CPU6502) adc(v byte) {
 	a := c.A
-	sum := uint16(a) + uint16(v) + uint16(c.getFlag(flagC))
-	result := byte(sum)
+	carryIn := uint16(c.getFlag(flagC))
+	binarySum := uint16(a) + uint16(v) + carryIn
+	binaryResult := byte(binarySum)
 
-	c.setFlag(flagC, sum > 0xFF)
-	c.setFlag(flagV, ((^(a ^ v))&(a^result)&0x80) != 0)
-	c.A = result
+	if c.getFlag(flagD) != 0 {
+		adjusted := binarySum
+		if ((uint16(a) & 0x0F) + (uint16(v) & 0x0F) + carryIn) > 0x09 {
+			adjusted += 0x06
+		}
+		if adjusted > 0x99 {
+			adjusted += 0x60
+		}
+
+		c.setFlag(flagC, adjusted > 0xFF)
+		c.setFlag(flagV, ((^(a ^ v))&(a^binaryResult)&0x80) != 0)
+		c.A = byte(adjusted)
+		c.updateZN(c.A)
+		return
+	}
+
+	c.setFlag(flagC, binarySum > 0xFF)
+	c.setFlag(flagV, ((^(a ^ v))&(a^binaryResult)&0x80) != 0)
+	c.A = binaryResult
 	c.updateZN(c.A)
 }
 
 func (c *CPU6502) sbc(v byte) {
-	c.adc(^v)
+	a := c.A
+	carryIn := int16(c.getFlag(flagC))
+	borrow := int16(1 - carryIn)
+	binaryDiff := int16(a) - int16(v) - borrow
+	binaryResult := byte(binaryDiff)
+
+	if c.getFlag(flagD) != 0 {
+		low := int16(a&0x0F) - int16(v&0x0F) - borrow
+		high := int16(a>>4) - int16(v>>4)
+
+		if low < 0 {
+			low -= 0x06
+			high--
+		}
+		if high < 0 {
+			high -= 0x06
+		}
+
+		c.setFlag(flagC, binaryDiff >= 0)
+		c.setFlag(flagV, ((a^v)&(a^binaryResult)&0x80) != 0)
+		c.A = byte((high << 4) | (low & 0x0F))
+		c.updateZN(c.A)
+		return
+	}
+
+	c.setFlag(flagC, binaryDiff >= 0)
+	c.setFlag(flagV, ((a^v)&(a^binaryResult)&0x80) != 0)
+	c.A = binaryResult
+	c.updateZN(c.A)
 }
 
 func (c *CPU6502) compare(reg, v byte) {
@@ -386,6 +435,10 @@ func (c *CPU6502) Halted() bool {
 	return c.halted
 }
 
+func (c *CPU6502) ReadyForInstruction() bool {
+	return c.current == nil
+}
+
 func (c *CPU6502) flagStatusString() string {
 	flags := []struct {
 		mask  byte
@@ -419,13 +472,15 @@ func (c *CPU6502) traceInstruction(cycle uint64, pc uint16, opcode byte, instr *
 	}
 
 	c.writeTraceHeader()
+	visit := c.traceVisitMarker(pc)
 	rawBytes := c.traceRawBytes(opcode, c.traceOperandBytes(bus, pc, instr.bytes))
 	mnemonic, operand := c.traceAssembly(instr, pc, bus)
 	_, _ = fmt.Fprintf(
 		c.traceWriter,
-		"%s  %s  %s  %s %s  %s %s\n",
+		"%s  %s  %s  %s  %s %s  %s %s\n",
 		c.traceColor(traceAnsiDim, fmt.Sprintf("%-6d", cycle)),
 		c.traceColor(traceAnsiPC, fmt.Sprintf("%-5s", fmt.Sprintf("$%04X", pc))),
+		visit,
 		c.traceColor(traceAnsiBytes, fmt.Sprintf("%-8s", rawBytes)),
 		c.traceColor(traceAnsiMnemonic, fmt.Sprintf("%-4s", mnemonic)),
 		c.traceColor(traceAnsiOperand, fmt.Sprintf("%-13s", operand)),
@@ -440,11 +495,13 @@ func (c *CPU6502) traceInterrupt(cycle uint64, pc uint16, name string) {
 	}
 
 	c.writeTraceHeader()
+	visit := c.traceVisitMarker(pc)
 	_, _ = fmt.Fprintf(
 		c.traceWriter,
-		"%s  %s  %s  %s  %s %s\n",
+		"%s  %s  %s  %s  %s  %s %s\n",
 		c.traceColor(traceAnsiDim, fmt.Sprintf("%-6d", cycle)),
 		c.traceColor(traceAnsiPC, fmt.Sprintf("%-5s", fmt.Sprintf("$%04X", pc))),
+		visit,
 		c.traceColor(traceAnsiBytes, fmt.Sprintf("%-8s", "")),
 		c.traceColor(traceAnsiInterrupt, fmt.Sprintf("%-18s", name)),
 		c.traceRegisterState(),
@@ -459,15 +516,34 @@ func (c *CPU6502) writeTraceHeader() {
 
 	_, _ = fmt.Fprintf(
 		c.traceWriter,
-		"%s  %s  %s  %s  %s %s\n",
+		"%s  %s  %s  %s  %s  %s %s\n",
 		c.traceColor(traceAnsiDim, fmt.Sprintf("%-6s", "CYC")),
 		c.traceColor(traceAnsiPC, fmt.Sprintf("%-5s", "PC")),
+		c.traceColor(traceAnsiVisit, fmt.Sprintf("%-6s", "FLOW")),
 		c.traceColor(traceAnsiBytes, fmt.Sprintf("%-8s", "BYTES")),
 		c.traceColor(traceAnsiMnemonic, fmt.Sprintf("%-18s", "ASM")),
 		c.traceColor(traceAnsiRegister, "REGS"),
 		c.traceColor(traceAnsiFlags, "FLAGS"),
 	)
 	c.traceHeaderOut = true
+}
+
+func (c *CPU6502) traceVisitMarker(pc uint16) string {
+	if c.traceVisitedPC == nil {
+		c.traceVisitedPC = make(map[uint16]uint32)
+	}
+
+	visits := c.traceVisitedPC[pc] + 1
+	c.traceVisitedPC[pc] = visits
+
+	label := fmt.Sprintf("SEEN#%d", visits)
+	color := traceAnsiVisit
+	if visits == 1 {
+		label = "NEW"
+		color = traceAnsiDim
+	}
+
+	return c.traceColor(color, fmt.Sprintf("%-6s", label))
 }
 
 func (c *CPU6502) traceRegisterState() string {

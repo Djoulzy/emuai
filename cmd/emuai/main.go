@@ -98,9 +98,11 @@ func main() {
 	binaryPath := flag.String("bin", "", "path to a .bin file to load into RAM before execution")
 	timeout := flag.Duration("timeout", 0, "maximum wall-clock run duration; 0 disables timeout")
 	maxCycles := flag.Uint64("max-cycles", 0, "maximum number of motherboard cycles to execute; 0 disables the limit")
+	stopPC := &uint16Flag{}
 	realtime := flag.Bool("realtime", false, "run using the motherboard clock instead of stepping as fast as possible")
 	loadAddr := &uint16Flag{value: 0x0200}
 	pcAddr := &uint16Flag{}
+	flag.Var(stopPC, "stop-pc", "stop execution before the instruction at this program counter executes")
 	flag.Var(loadAddr, "load-addr", "RAM address where the binary is loaded")
 	flag.Var(pcAddr, "pc", "CPU program counter start address; defaults to -load-addr")
 	flag.Parse()
@@ -199,14 +201,14 @@ func main() {
 		log.Printf("loaded built-in demo at 0x%04X, entry point 0x%04X", loadAddr.value, entryPoint)
 	}
 
-	if err := runMachine(ctx, board, processor, *realtime, *maxCycles, control); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+	if err := runMachine(ctx, board, processor, *realtime, *maxCycles, control, stopPC); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		log.Fatalf("run board: %v", err)
 	}
 
 	log.Printf("emulation stopped after %d cycles", board.Cycle())
 }
 
-func runMachine(ctx context.Context, board *emulator.Motherboard, processor *cpu.CPU6502, realtime bool, maxCycles uint64, control *runControl) error {
+func runMachine(ctx context.Context, board *emulator.Motherboard, processor *cpu.CPU6502, realtime bool, maxCycles uint64, control *runControl, stopPC *uint16Flag) error {
 	var ticker *time.Ticker
 	if realtime {
 		ticker = time.NewTicker(time.Second / time.Duration(motherboardFrequencyHz))
@@ -216,6 +218,11 @@ func runMachine(ctx context.Context, board *emulator.Motherboard, processor *cpu
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+
+		if stopPC != nil && stopPC.set && processor.ReadyForInstruction() && processor.PC == stopPC.value {
+			log.Printf("stopped at PC 0x%04X after %d cycles", stopPC.value, board.Cycle())
+			return nil
 		}
 
 		if processor.Halted() {

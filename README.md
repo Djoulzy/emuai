@@ -33,13 +33,15 @@ Modular 8-bit machine emulator scaffold in Go.
 ## Running With Instruction Trace
 
 - Use `go run ./cmd/emuai -trace` to print each 6502 instruction as it starts executing.
-- Each trace line includes the motherboard cycle, program counter, opcode, mnemonic, CPU registers, the raw `P` value, and a decoded `flags=NVUBDIZC` view where unset flags are shown as `.`.
+- Each trace line includes the motherboard cycle, program counter, a `FLOW` marker (`NEW` on first visit, `SEEN#n` on revisits), opcode bytes, mnemonic, CPU registers, the raw `P` value, and a decoded `flags=NVUBDIZC` view where unset flags are shown as `.`.
 
 ## Running A Binary
 
 - Use `go run ./cmd/emuai -bin assets/6502_functional_test.bin -load-addr 0x0400` to load a raw binary into RAM and execute it from that address.
 - Use `-pc` when the CPU must start from an address different from the binary load address.
+- Use `-stop-pc` to stop cleanly before executing the instruction at a specific program counter value.
 - Example: `go run ./cmd/emuai -bin assets/6502_functional_test.bin -load-addr 0x0400 -pc 0x040A`.
+- Example with success trap: `./bin/emuai -bin assets/6502_functional_test.bin -load-addr 0x0000 -pc 0x0400 -stop-pc 0x3469`.
 - Use `-max-cycles` to stop after a specific number of motherboard cycles.
 - Use `-timeout` to cap wall-clock runtime, or leave it at `0` to run until halt, cycle limit, or manual interruption.
 - Use `-realtime` if you explicitly want clock-driven execution; by default the CLI steps as fast as possible.

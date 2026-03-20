@@ -261,14 +261,107 @@ func TestCPU6502_TraceWriter(t *testing.T) {
 	ansiPattern := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	got := strings.TrimSpace(ansiPattern.ReplaceAllString(trace.String(), ""))
 	want := strings.Join([]string{
-		"CYC     PC     BYTES     ASM                 REGS FLAGS",
-		"0       $0200  A9 42     LDA  #$42           A:00 X:00 Y:00 SP:FD P:24 ..U..I..",
-		"2       $0202  AA        TAX                 A:42 X:00 Y:00 SP:FD P:24 ..U..I..",
-		"4       $0203  00        BRK                 A:42 X:42 Y:00 SP:FD P:24 ..U..I..",
+		"CYC     PC     FLOW    BYTES     ASM                 REGS FLAGS",
+		"0       $0200  NEW     A9 42     LDA  #$42           A:00 X:00 Y:00 SP:FD P:24 ..U..I..",
+		"2       $0202  NEW     AA        TAX                 A:42 X:00 Y:00 SP:FD P:24 ..U..I..",
+		"4       $0203  NEW     00        BRK                 A:42 X:42 Y:00 SP:FD P:24 ..U..I..",
 	}, "\n")
 
 	if got != want {
 		t.Fatalf("unexpected trace output:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestCPU6502_TraceWriterMarksRevisitedPC(t *testing.T) {
+	program := []byte{0xEA, 0x4C, 0x00, 0x02}
+	c, bus := newTestCPU(t, program)
+
+	var trace bytes.Buffer
+	c.SetTraceWriter(&trace)
+
+	for cycle := uint64(0); cycle < 6; cycle++ {
+		tickOnce(t, c, bus, cycle)
+	}
+
+	ansiPattern := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	got := strings.TrimSpace(ansiPattern.ReplaceAllString(trace.String(), ""))
+
+	if !strings.Contains(got, "0       $0200  NEW     EA        NOP") {
+		t.Fatalf("expected first visit to mark PC as NEW, got:\n%s", got)
+	}
+	if !strings.Contains(got, "$0200  SEEN#2") {
+		t.Fatalf("expected revisited PC to be highlighted as SEEN#2, got:\n%s", got)
+	}
+	if !strings.Contains(got, "2       $0201  NEW     4C 00 02  JMP  $0200") {
+		t.Fatalf("expected intermediate JMP trace line, got:\n%s", got)
+	}
+}
+
+func TestCPU6502_ADCDecimalMode(t *testing.T) {
+	tests := []struct {
+		name      string
+		acc       byte
+		operand   byte
+		carryIn   bool
+		wantA     byte
+		wantCarry bool
+	}{
+		{name: "simple sum", acc: 0x15, operand: 0x27, wantA: 0x42, wantCarry: false},
+		{name: "carry out", acc: 0x58, operand: 0x46, wantA: 0x04, wantCarry: true},
+		{name: "carry in", acc: 0x99, operand: 0x01, carryIn: true, wantA: 0x01, wantCarry: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			program := []byte{0xF8, 0xA9, tt.acc, 0x18, 0x69, tt.operand, 0x00}
+			if tt.carryIn {
+				program[3] = 0x38
+			}
+
+			c, bus := newTestCPU(t, program)
+			runUntilHalt(t, c, bus, 32)
+
+			if c.A != tt.wantA {
+				t.Fatalf("expected A=0x%02X, got 0x%02X", tt.wantA, c.A)
+			}
+			if gotCarry := c.getFlag(flagC) != 0; gotCarry != tt.wantCarry {
+				t.Fatalf("expected carry=%v, got %v", tt.wantCarry, gotCarry)
+			}
+		})
+	}
+}
+
+func TestCPU6502_SBCDecimalMode(t *testing.T) {
+	tests := []struct {
+		name      string
+		acc       byte
+		operand   byte
+		carryIn   bool
+		wantA     byte
+		wantCarry bool
+	}{
+		{name: "simple subtract", acc: 0x50, operand: 0x15, carryIn: true, wantA: 0x35, wantCarry: true},
+		{name: "borrow", acc: 0x00, operand: 0x01, carryIn: true, wantA: 0x99, wantCarry: false},
+		{name: "borrow in", acc: 0x10, operand: 0x01, carryIn: false, wantA: 0x08, wantCarry: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			program := []byte{0xF8, 0xA9, tt.acc, 0x38, 0xE9, tt.operand, 0x00}
+			if !tt.carryIn {
+				program[3] = 0x18
+			}
+
+			c, bus := newTestCPU(t, program)
+			runUntilHalt(t, c, bus, 32)
+
+			if c.A != tt.wantA {
+				t.Fatalf("expected A=0x%02X, got 0x%02X", tt.wantA, c.A)
+			}
+			if gotCarry := c.getFlag(flagC) != 0; gotCarry != tt.wantCarry {
+				t.Fatalf("expected carry=%v, got %v", tt.wantCarry, gotCarry)
+			}
+		})
 	}
 }
 

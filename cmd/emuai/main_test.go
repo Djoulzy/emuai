@@ -5,6 +5,10 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/Djoulzy/emuai/internal/components/cpu"
+	"github.com/Djoulzy/emuai/internal/components/memory"
+	"github.com/Djoulzy/emuai/internal/emulator"
 )
 
 func TestRunControlTogglePaused(t *testing.T) {
@@ -93,5 +97,60 @@ func TestProcessControlKeyQuit(t *testing.T) {
 
 	if !called {
 		t.Fatal("expected quit callback to be called")
+	}
+}
+
+func TestRunMachineStopsAtProgramCounter(t *testing.T) {
+	board, err := emulator.NewMotherboard(emulator.Config{FrequencyHz: motherboardFrequencyHz})
+	if err != nil {
+		t.Fatalf("new motherboard: %v", err)
+	}
+	defer func() {
+		if err := board.Close(); err != nil {
+			t.Fatalf("close motherboard: %v", err)
+		}
+	}()
+
+	ram, err := memory.NewRAM("ram", 0x0000, 0xFFFF)
+	if err != nil {
+		t.Fatalf("new RAM: %v", err)
+	}
+	if err := board.Bus().MapDevice(0x0000, 0xFFFF, "ram", ram); err != nil {
+		t.Fatalf("map RAM: %v", err)
+	}
+
+	processor := cpu.NewCPU6502("cpu-test", 0x0200)
+	if err := board.AddComponent(ram); err != nil {
+		t.Fatalf("add RAM: %v", err)
+	}
+	if err := board.AddComponent(processor); err != nil {
+		t.Fatalf("add CPU: %v", err)
+	}
+
+	if err := board.Reset(context.Background()); err != nil {
+		t.Fatalf("reset board: %v", err)
+	}
+
+	program := []byte{0xEA, 0xEA, 0x00}
+	if err := ram.Load(0x0200, program); err != nil {
+		t.Fatalf("load program: %v", err)
+	}
+
+	stopPC := &uint16Flag{value: 0x0201, set: true}
+	if err := runMachine(context.Background(), board, processor, false, 0, nil, stopPC); err != nil {
+		t.Fatalf("runMachine returned error: %v", err)
+	}
+
+	if processor.PC != 0x0201 {
+		t.Fatalf("expected stop at PC 0x0201, got 0x%04X", processor.PC)
+	}
+	if processor.Halted() {
+		t.Fatal("expected CPU not to halt when stop-pc triggers")
+	}
+	if board.Cycle() == 0 {
+		t.Fatal("expected at least one cycle before stop-pc triggers")
+	}
+	if !processor.ReadyForInstruction() {
+		t.Fatal("expected stop-pc to trigger at an instruction boundary")
 	}
 }
