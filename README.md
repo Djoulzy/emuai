@@ -39,6 +39,7 @@ Modular 8-bit machine emulator scaffold in Go.
 
 - Use `-video-backend null` for the current no-op renderer.
 - Use `-video-backend vulkan` with `-tags vulkan` to open a basic GLFW window backed by a Vulkan instance and surface.
+- If Vulkan runtime initialization fails on the host, startup fails with the underlying Vulkan error.
 - The current Vulkan backend stops at window, instance, and surface bring-up; the swapchain upload path and CRT shader pipeline are still pending.
 - Example: `go run -tags vulkan ./cmd/emuai -video-backend vulkan`.
 - Tune the base framebuffer with `-video-width`, `-video-height`, and `-video-refresh-hz`.

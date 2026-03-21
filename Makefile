@@ -21,7 +21,15 @@ help:
 
 build:
 	@mkdir -p $(BIN_DIR)
-	$(GO) build -o $(BIN_PATH) $(CMD_PATH)
+ifeq ($(shell uname -s),Darwin)
+ifdef VULKAN_SDK
+	CGO_LDFLAGS="-L$(VULKAN_SDK)/lib" $(GO) build -tags vulkan -ldflags '-extldflags "-rpath $(VULKAN_SDK)/lib"' -o $(BIN_PATH) $(CMD_PATH)
+else
+	$(GO) build -tags vulkan -o $(BIN_PATH) $(CMD_PATH)
+endif
+else
+	$(GO) build -tags vulkan -o $(BIN_PATH) $(CMD_PATH)
+endif
 
 run:
 	$(GO) run $(CMD_PATH)
