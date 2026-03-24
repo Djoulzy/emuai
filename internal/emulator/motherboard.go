@@ -49,10 +49,14 @@ func (m *Motherboard) AddComponent(c ClockedComponent) error {
 	return nil
 }
 
-func (m *Motherboard) Reset(ctx context.Context) error {
+func (m *Motherboard) Reset(ctx context.Context, bus *Bus) error {
+	if bus == nil {
+		bus = m.bus
+	}
+
 	components := m.snapshotComponents()
 	for _, c := range components {
-		if err := c.Reset(ctx); err != nil {
+		if err := c.Reset(ctx, bus); err != nil {
 			return fmt.Errorf("motherboard: reset %s: %w", c.Name(), err)
 		}
 	}

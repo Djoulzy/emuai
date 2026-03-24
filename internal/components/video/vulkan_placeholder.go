@@ -210,6 +210,7 @@ func (r *VulkanRenderer) Present(frame Frame) error {
 	var presentErr error
 	r.doOnMainThread(func() {
 		r.frameCount = frame.Sequence
+		presentFrameInWindow(r.window, frame)
 		if frame.Sequence == 1 || frame.Sequence%30 == 0 {
 			r.window.SetTitle(fmt.Sprintf("%s - frame %d - %dx%d", r.titlePrefix, frame.Sequence, frame.Width, frame.Height))
 		}

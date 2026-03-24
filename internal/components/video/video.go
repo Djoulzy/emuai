@@ -51,7 +51,7 @@ func NewDevice(name string, cfg Config) (*Device, error) {
 
 func (v *Device) Name() string { return v.name }
 
-func (v *Device) Reset(_ context.Context) error {
+func (v *Device) Reset(_ context.Context, bus *emulator.Bus) error {
 	v.frameSequence = 0
 	v.nextPresentTick = v.cyclesPerFrame
 	v.framebuffer.Fill(0xFF050505)

@@ -32,9 +32,10 @@ func TestCPU6502_FunctionalBinaryReachesSuccessLoop(t *testing.T) {
 		t.Fatalf("load functional binary: %v", err)
 	}
 
-	c := NewCPU6502("cpu", 0x0400)
+	c := NewCPU6502("cpu")
+	c.SetPC(0x0400)
 	c.SetHaltOnBRK(false)
-	if err := c.Reset(context.Background()); err != nil {
+	if err := c.Reset(context.Background(), bus); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 

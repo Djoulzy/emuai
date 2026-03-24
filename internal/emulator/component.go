@@ -10,7 +10,7 @@ type Tick struct {
 // ClockedComponent is driven by the motherboard on every cycle.
 type ClockedComponent interface {
 	Name() string
-	Reset(ctx context.Context) error
+	Reset(ctx context.Context, bus *Bus) error
 	Tick(ctx context.Context, tick Tick, bus *Bus) error
 	Close() error
 }

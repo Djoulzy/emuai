@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/Djoulzy/emuai/internal/components/memory"
 	"github.com/Djoulzy/emuai/internal/emulator"
 )
 
@@ -113,7 +114,7 @@ func TestAppleIIeCRTCTickAdvancesVBlankAndPresents(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = crtc.Close() })
 
-	if err := crtc.Reset(context.Background()); err != nil {
+	if err := crtc.Reset(context.Background(), nil); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 
@@ -128,5 +129,53 @@ func TestAppleIIeCRTCTickAdvancesVBlankAndPresents(t *testing.T) {
 	}
 	if crtc.VBL != 0x80 && crtc.VBL != 0x00 {
 		t.Fatalf("unexpected VBL value 0x%02X", crtc.VBL)
+	}
+}
+
+func TestAppleIIeCRTCReadsTextPageFromBusMemory(t *testing.T) {
+	charROM := make([]byte, appleIIeCharROMSize)
+	for row := 0; row < 8; row++ {
+		charROM[(0x41*8)+row] = 0x7E
+	}
+
+	ram, err := memory.NewRAM("ram", 0x0000, 0xFFFF)
+	if err != nil {
+		t.Fatalf("new RAM: %v", err)
+	}
+	page := make([]byte, appleIIeTextPageSize)
+	for idx := range page {
+		page[idx] = 0xA0
+	}
+	page[appleIIeTextOffset(0, 0)] = 0xC1
+	if err := ram.Load(appleIIeTextBaseAddress(false), page); err != nil {
+		t.Fatalf("load text page: %v", err)
+	}
+
+	bus := emulator.NewBus()
+	if err := bus.MapDevice(0x0000, 0xFFFF, "ram", ram); err != nil {
+		t.Fatalf("map RAM: %v", err)
+	}
+
+	crtc, err := NewAppleIIeCRTC("crtc", Config{}, AppleIIeOptions{CharacterROM: charROM, ColorDisplay: true})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	if err := crtc.Reset(context.Background(), bus); err != nil {
+		t.Fatalf("reset with bus: %v", err)
+	}
+
+	crtc.redrawFrame()
+	snapshot := crtc.Framebuffer().Snapshot(1)
+
+	litPixels := 0
+	for x := 0; x < 14; x++ {
+		if snapshot.Pixels[x] != appleIIeBlackColor {
+			litPixels++
+		}
+	}
+	if litPixels == 0 {
+		t.Fatal("expected rendered glyph pixels from bus-backed text page")
 	}
 }

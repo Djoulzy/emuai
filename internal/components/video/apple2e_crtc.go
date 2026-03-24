@@ -85,6 +85,8 @@ type AppleIIeCRTC struct {
 
 	Reg [18]byte
 
+	bus *emulator.Bus
+
 	mode         AppleIIeDisplayMode
 	renderMode   appleIIeRenderMode
 	memory       AppleIIeMemory
@@ -203,14 +205,15 @@ func newAppleIIeCRTC(name string, cfg Config, options AppleIIeOptions, renderer 
 
 	crtc.initRegisters()
 	crtc.SetTextMode()
-	if err := crtc.Reset(context.Background()); err != nil {
+	if err := crtc.Reset(context.Background(), nil); err != nil {
 		return nil, err
 	}
 
 	return crtc, nil
 }
 
-func (c *AppleIIeCRTC) Reset(_ context.Context) error {
+func (c *AppleIIeCRTC) Reset(_ context.Context, bus *emulator.Bus) error {
+	c.bus = bus
 	c.frameSequence = 0
 	c.nextPresentTick = c.cyclesPerFrame
 	c.BeamX = 0
@@ -226,7 +229,10 @@ func (c *AppleIIeCRTC) Reset(_ context.Context) error {
 	return nil
 }
 
-func (c *AppleIIeCRTC) Tick(_ context.Context, tick emulator.Tick, _ *emulator.Bus) error {
+func (c *AppleIIeCRTC) Tick(_ context.Context, tick emulator.Tick, bus *emulator.Bus) error {
+	if bus != nil && c.bus == nil {
+		c.bus = bus
+	}
 	c.advanceBeam()
 
 	if tick.Cycle < c.nextPresentTick {
@@ -606,10 +612,7 @@ func (c *AppleIIeCRTC) renderHiRes(doubleHiRes bool) {
 			continue
 		}
 		for col := 0; col < 40; col++ {
-			mainByte := byte(0)
-			if offset := appleIIeHiResOffset(y, col); offset < len(c.videoMainMem) {
-				mainByte = c.videoMainMem[offset]
-			}
+			mainByte := c.readHiResByte(y, col, false)
 			for bit := 0; bit < 7; bit++ {
 				pixelOn := mainByte&(1<<bit) != 0
 				x := col*7 + bit
@@ -623,15 +626,13 @@ func (c *AppleIIeCRTC) renderHiRes(doubleHiRes bool) {
 			if !doubleHiRes || c.videoAuxMem == nil {
 				continue
 			}
-			if offset := appleIIeHiResOffset(y, col); offset < len(c.videoAuxMem) {
-				auxByte := c.videoAuxMem[offset]
-				for bit := 0; bit < 7; bit++ {
-					if auxByte&(1<<bit) == 0 {
-						continue
-					}
-					x := col*7 + bit
-					c.fillRect(x*scaleX, y*scaleY, scaleX/2+1, scaleY, appleIIePalette[(bit+col)%len(appleIIePalette)])
+			auxByte := c.readHiResByte(y, col, true)
+			for bit := 0; bit < 7; bit++ {
+				if auxByte&(1<<bit) == 0 {
+					continue
 				}
+				x := col*7 + bit
+				c.fillRect(x*scaleX, y*scaleY, scaleX/2+1, scaleY, appleIIePalette[(bit+col)%len(appleIIePalette)])
 			}
 		}
 	}
@@ -643,17 +644,79 @@ func (c *AppleIIeCRTC) renderHiRes(doubleHiRes bool) {
 func (c *AppleIIeCRTC) textByte(row, col int, columns80 bool) byte {
 	index := col
 	mem := c.videoMainMem
+	aux := false
 	if columns80 {
 		index = col / 2
 		if col%2 == 0 {
 			mem = c.videoAuxMem
+			aux = true
 		}
 	}
 	offset := appleIIeTextOffset(row, index)
+	if value, ok := c.readActiveVideoByte(offset, aux); ok {
+		return value
+	}
 	if offset >= len(mem) {
 		return 0xA0
 	}
 	return mem[offset]
+}
+
+func (c *AppleIIeCRTC) readHiResByte(row, col int, aux bool) byte {
+	offset := appleIIeHiResOffset(row, col)
+	if value, ok := c.readActiveVideoByte(offset, aux); ok {
+		return value
+	}
+
+	bank := c.videoMainMem
+	if aux {
+		bank = c.videoAuxMem
+	}
+	if offset >= len(bank) {
+		return 0
+	}
+	return bank[offset]
+}
+
+func (c *AppleIIeCRTC) readActiveVideoByte(offset int, aux bool) (byte, bool) {
+	if c.bus == nil {
+		return 0, false
+	}
+
+	addr, ok := c.activeVideoAddress(offset, aux)
+	if !ok {
+		return 0, false
+	}
+
+	value, err := c.bus.Read(addr)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func (c *AppleIIeCRTC) activeVideoAddress(offset int, aux bool) (uint16, bool) {
+	if offset < 0 || aux {
+		return 0, false
+	}
+
+	var base uint16
+	switch c.renderMode {
+	case appleIIeRenderText40, appleIIeRenderText80, appleIIeRenderLoRes, appleIIeRenderLoRes80:
+		if offset >= appleIIeTextPageSize {
+			return 0, false
+		}
+		base = appleIIeTextBaseAddress(c.mode.Page2)
+	case appleIIeRenderHiRes, appleIIeRenderDoubleHiRes:
+		if offset >= appleIIeHiResPageSize {
+			return 0, false
+		}
+		base = appleIIeHiResBaseAddress(c.mode.Page2)
+	default:
+		return 0, false
+	}
+
+	return base + uint16(offset), true
 }
 
 func (c *AppleIIeCRTC) drawCharacter(x, y, width, height int, value byte) {
@@ -733,6 +796,20 @@ func normalizedCharacterROM(charROM []byte) []byte {
 	normalized := make([]byte, appleIIeCharROMSize)
 	copy(normalized, charROM)
 	return normalized
+}
+
+func appleIIeTextBaseAddress(page2 bool) uint16 {
+	if page2 {
+		return 0x0800
+	}
+	return 0x0400
+}
+
+func appleIIeHiResBaseAddress(page2 bool) uint16 {
+	if page2 {
+		return 0x4000
+	}
+	return 0x2000
 }
 
 const (

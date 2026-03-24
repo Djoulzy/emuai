@@ -53,7 +53,7 @@ func TestDevicePresentsFramesAtRefreshCadence(t *testing.T) {
 		framebuffer:    NewFramebuffer(4, 4),
 		cyclesPerFrame: 10,
 	}
-	if err := device.Reset(context.Background()); err != nil {
+	if err := device.Reset(context.Background(), nil); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 

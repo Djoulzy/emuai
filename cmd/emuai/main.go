@@ -5,11 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -18,14 +20,23 @@ import (
 	"github.com/Djoulzy/emuai/internal/components/peripheral"
 	"github.com/Djoulzy/emuai/internal/components/sound"
 	"github.com/Djoulzy/emuai/internal/components/video"
+	romconfig "github.com/Djoulzy/emuai/internal/config"
 	"github.com/Djoulzy/emuai/internal/emulator"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
 const (
-	motherboardFrequencyHz = 1_000_000
-	pausePollInterval      = 25 * time.Millisecond
+	motherboardFrequencyHz    = 1_000_000
+	pausePollInterval         = 25 * time.Millisecond
+	pauseDumpInstructionCount = 16
+	startupScreenColumns      = 40
+	startupScreenRows         = 24
+	appleIIeCharacterROMName  = "3410036.bin"
+	defaultROMConfigName      = "apple2-roms.yaml"
+	appleIIeTextPageSize      = 0x0400
+	appleIIeTextPage1Address  = 0x0400
+	resetVectorAddress        = 0xFFFC
 )
 
 type uint16Flag struct {
@@ -96,6 +107,7 @@ func (f *uint16Flag) Set(raw string) error {
 func main() {
 	trace := flag.Bool("trace", false, "print each instruction as the CPU executes it")
 	binaryPath := flag.String("bin", "", "path to a .bin file to load into RAM before execution")
+	romConfigPath := flag.String("rom-config", "", "path to a YAML file describing ROM images to load into memory")
 	timeout := flag.Duration("timeout", 0, "maximum wall-clock run duration; 0 disables timeout")
 	maxCycles := flag.Uint64("max-cycles", 0, "maximum number of motherboard cycles to execute; 0 disables the limit")
 	stopPC := &uint16Flag{}
@@ -104,16 +116,18 @@ func main() {
 	videoWidth := flag.Int("video-width", 320, "video framebuffer width in pixels")
 	videoHeight := flag.Int("video-height", 240, "video framebuffer height in pixels")
 	videoRefreshHz := flag.Int("video-refresh-hz", 60, "video refresh rate in Hz")
-	loadAddr := &uint16Flag{value: 0x0200}
-	pcAddr := &uint16Flag{}
+	loadAddr := &uint16Flag{}
 	flag.Var(stopPC, "stop-pc", "stop execution before the instruction at this program counter executes")
 	flag.Var(loadAddr, "load-addr", "RAM address where the binary is loaded")
-	flag.Var(pcAddr, "pc", "CPU program counter start address; defaults to -load-addr")
 	flag.Parse()
 
-	entryPoint := loadAddr.value
-	if pcAddr.set {
-		entryPoint = pcAddr.value
+	if *binaryPath == "" && *romConfigPath == "" {
+		defaultROMConfigPath, err := resolveRepositoryPath(filepath.Join("ROMs", defaultROMConfigName))
+		if err != nil {
+			log.Fatalf("no program source provided and default ROM config unavailable: %v", err)
+		}
+		*romConfigPath = defaultROMConfigPath
+		log.Printf("using default ROM config %s", defaultROMConfigPath)
 	}
 
 	board, err := emulator.NewMotherboard(emulator.Config{FrequencyHz: motherboardFrequencyHz})
@@ -135,13 +149,20 @@ func main() {
 		log.Fatalf("map RAM: %v", err)
 	}
 
-	processor := cpu.NewCPU6502("cpu-main", entryPoint)
-	processor.SetHaltOnBRK(*binaryPath == "")
+	processor := cpu.NewCPU6502("cpu-main")
+	processor.SetHaltOnBRK(false)
 	if *trace {
 		processor.SetTraceWriter(os.Stdout)
 	}
+	soundDevice := sound.NewNullSound("sound-main")
+	keyboardDevice := peripheral.NewKeyboard("kbd-main")
 
-	videoDevice, err := video.NewDevice("video-main", video.Config{
+	characterROM, characterROMPath, err := loadAppleIIeCharacterROM()
+	if err != nil {
+		log.Fatalf("load Apple IIe character ROM: %v", err)
+	}
+
+	videoDevice, err := video.NewAppleIIeCRTC("video-main", video.Config{
 		Backend: video.Backend(*videoBackend),
 		ClockHz: motherboardFrequencyHz,
 		CRT: video.CRTConfig{
@@ -149,17 +170,20 @@ func main() {
 			Height:    *videoHeight,
 			RefreshHz: *videoRefreshHz,
 		},
+	}, video.AppleIIeOptions{
+		CharacterROM: characterROM,
 	})
 	if err != nil {
 		log.Fatalf("create video: %v", err)
 	}
+	log.Printf("loaded Apple IIe character ROM %s", characterROMPath)
 
 	components := []emulator.ClockedComponent{
 		ram,
 		processor,
 		videoDevice,
-		sound.NewNullSound("sound-main"),
-		peripheral.NewKeyboard("kbd-main"),
+		soundDevice,
+		keyboardDevice,
 	}
 
 	for _, c := range components {
@@ -181,16 +205,28 @@ func main() {
 	}
 
 	control := &runControl{}
-	stopPauseControls, err := startPauseControls(control, cancel)
+	stopPauseControls, err := startPauseControls(control, cancel, board.Bus())
 	if err != nil {
 		log.Printf("pause controls disabled: %v", err)
 	} else {
 		defer stopPauseControls()
-		log.Printf("interactive controls: press space to pause/resume, q to quit, Ctrl+C to interrupt")
+		log.Printf("interactive controls: press space to pause, then use the pause menu for resume, memory dump, or quit; Ctrl+C interrupts")
 	}
 
-	if err := board.Reset(ctx); err != nil {
-		log.Fatalf("reset board: %v", err)
+	if err := resetForBoot(ctx, board.Bus(), ram, videoDevice, soundDevice, keyboardDevice); err != nil {
+		log.Fatalf("prepare machine state: %v", err)
+	}
+
+	writeStartupTextToRAM(ram, startupScreenLines(*videoBackend, *binaryPath, *romConfigPath, loadAddr.value))
+
+	if *romConfigPath != "" {
+		loadedROMs, err := loadROMsFromConfig(ram, *romConfigPath)
+		if err != nil {
+			log.Fatalf("load ROM config: %v", err)
+		}
+		for _, loadedROM := range loadedROMs {
+			log.Print(loadedROM)
+		}
 	}
 
 	if *binaryPath != "" {
@@ -201,21 +237,11 @@ func main() {
 		if err := ram.LoadFile(resolvedPath, loadAddr.value); err != nil {
 			log.Fatalf("load binary: %v", err)
 		}
-		log.Printf("loaded binary %s at 0x%04X, entry point 0x%04X", resolvedPath, loadAddr.value, entryPoint)
-	} else {
-		program := []byte{
-			0xA9, 0x42, // LDA #$42
-			0x8D, 0x00, 0x10, // STA $1000
-			0xAA, // TAX
-			0xE8, // INX
-			0xEA, // NOP
-			0x00, // BRK
-		}
+		log.Printf("loaded binary %s at 0x%04X", resolvedPath, loadAddr.value)
+	}
 
-		if err := ram.Load(loadAddr.value, program); err != nil {
-			log.Fatalf("seed RAM: %v", err)
-		}
-		log.Printf("loaded built-in demo at 0x%04X, entry point 0x%04X", loadAddr.value, entryPoint)
+	if err := processor.Reset(ctx, board.Bus()); err != nil {
+		log.Fatalf("reset CPU after loading boot sources: %v", err)
 	}
 
 	if err := runMachine(ctx, board, processor, *realtime, *maxCycles, control, stopPC); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
@@ -223,6 +249,175 @@ func main() {
 	}
 
 	log.Printf("emulation stopped after %d cycles", board.Cycle())
+}
+
+func loadROMsFromConfig(ram *memory.RAM, configPath string) ([]string, error) {
+	resolvedConfigPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve ROM config path: %w", err)
+	}
+
+	set, err := romconfig.LoadROMSet(resolvedConfigPath)
+	if err != nil {
+		return nil, err
+	}
+
+	baseDir := filepath.Dir(resolvedConfigPath)
+	loadedROMs := make([]string, 0, len(set.ROMs))
+	for idx, rom := range set.ROMs {
+		resolvedROMPath := rom.ResolvePath(baseDir)
+		if err := ram.LoadFile(resolvedROMPath, rom.Start.Uint16()); err != nil {
+			return nil, fmt.Errorf("load ROM %d (%s): %w", idx, resolvedROMPath, err)
+		}
+
+		name := rom.Name
+		if name == "" {
+			name = filepath.Base(resolvedROMPath)
+		}
+
+		loadedROMs = append(loadedROMs, fmt.Sprintf("loaded ROM %s from %s at 0x%04X", name, resolvedROMPath, rom.Start.Uint16()))
+	}
+
+	return loadedROMs, nil
+}
+
+func resetForBoot(ctx context.Context, bus *emulator.Bus, ram *memory.RAM, videoDevice *video.AppleIIeCRTC, soundDevice *sound.NullSound, keyboardDevice *peripheral.Keyboard) error {
+	if err := ram.Reset(ctx, bus); err != nil {
+		return fmt.Errorf("reset RAM: %w", err)
+	}
+	if err := videoDevice.Reset(ctx, bus); err != nil {
+		return fmt.Errorf("reset video: %w", err)
+	}
+	if err := soundDevice.Reset(ctx, bus); err != nil {
+		return fmt.Errorf("reset sound: %w", err)
+	}
+	if err := keyboardDevice.Reset(ctx, bus); err != nil {
+		return fmt.Errorf("reset keyboard: %w", err)
+	}
+	return nil
+}
+
+func loadAppleIIeCharacterROM() ([]byte, string, error) {
+	resolvedPath, err := resolveRepositoryPath(filepath.Join("ROMs", appleIIeCharacterROMName))
+	if err != nil {
+		return nil, "", err
+	}
+
+	data, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("read %s: %w", resolvedPath, err)
+	}
+
+	if len(data) < 256*8 {
+		return nil, "", fmt.Errorf("character ROM %s is too small: got %d bytes", resolvedPath, len(data))
+	}
+
+	return data, resolvedPath, nil
+}
+
+func resolveRepositoryPath(relativePath string) (string, error) {
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve working directory: %w", err)
+	}
+
+	for dir := workingDir; ; dir = filepath.Dir(dir) {
+		candidate := filepath.Join(dir, relativePath)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+
+	return "", fmt.Errorf("could not locate %s from %s", relativePath, workingDir)
+}
+
+func startupScreenLines(backend string, binaryPath string, romConfigPath string, loadAddr uint16) []string {
+	source := "BUILT-IN DEMO"
+	if romConfigPath != "" {
+		source = strings.ToUpper(filepath.Base(romConfigPath))
+	}
+	if binaryPath != "" {
+		source = strings.ToUpper(filepath.Base(binaryPath))
+	}
+
+	return []string{
+		"EMUAI APPLE IIE ROM BOOT",
+		"",
+		fmt.Sprintf("VIDEO BACKEND : %s", strings.ToUpper(backend)),
+		fmt.Sprintf("CHAR ROM      : %s", strings.ToUpper(appleIIeCharacterROMName)),
+		fmt.Sprintf("SOURCE        : %s", source),
+		fmt.Sprintf("LOAD ADDRESS  : $%04X", loadAddr),
+		"CPU RESET AFTER ROM LOAD",
+		"",
+		"BOOT SCREEN READY.",
+		"PRESS SPACE FOR THE PAUSE MENU.",
+		"",
+		"TEXT PAGE 1  40 COLUMNS",
+	}
+}
+
+func writeStartupTextToRAM(ram *memory.RAM, lines []string) {
+	if ram == nil {
+		return
+	}
+
+	page := make([]byte, appleIIeTextPageSize)
+	for i := range page {
+		page[i] = encodeAppleIIeTextByte(' ')
+	}
+
+	for row, line := range lines {
+		if row >= startupScreenRows {
+			break
+		}
+		writeStartupTextLine(page, row, line)
+	}
+
+	if err := ram.Load(appleIIeTextPage1Address, page); err != nil {
+		log.Printf("startup text page load warning: %v", err)
+	}
+}
+
+func writeResetVector(ram *memory.RAM, addr uint16) error {
+	if ram == nil {
+		return fmt.Errorf("ram is nil")
+	}
+
+	vector := []byte{byte(addr & 0x00FF), byte(addr >> 8)}
+	return ram.Load(resetVectorAddress, vector)
+}
+
+func writeStartupTextLine(page []byte, row int, text string) {
+	if row < 0 || row >= startupScreenRows {
+		return
+	}
+
+	for col := 0; col < startupScreenColumns; col++ {
+		glyph := byte(' ')
+		if col < len(text) {
+			glyph = text[col]
+		}
+		page[startupTextOffset(row, col)] = encodeAppleIIeTextByte(glyph)
+	}
+}
+
+func startupTextOffset(row, col int) int {
+	return ((row & 0x07) << 7) + ((row >> 3) * 0x28) + col
+}
+
+func encodeAppleIIeTextByte(value byte) byte {
+	if value >= 'a' && value <= 'z' {
+		value -= 'a' - 'A'
+	}
+	if value < 0x20 || value > 0x5F {
+		value = '?'
+	}
+	return value | 0x80
 }
 
 func runMachine(ctx context.Context, board *emulator.Motherboard, processor *cpu.CPU6502, realtime bool, maxCycles uint64, control *runControl, stopPC *uint16Flag) error {
@@ -279,7 +474,7 @@ func waitWhilePaused(ctx context.Context, control *runControl) error {
 	return nil
 }
 
-func startPauseControls(control *runControl, quit func()) (func(), error) {
+func startPauseControls(control *runControl, quit func(), bus *emulator.Bus) (func(), error) {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return func() {}, nil
@@ -308,28 +503,42 @@ func startPauseControls(control *runControl, quit func()) (func(), error) {
 	configured.Oflag |= unix.OPOST | unix.ONLCR
 	configured.Lflag |= unix.ISIG
 	configured.Lflag &^= unix.ICANON | unix.ECHO
-	configured.Cc[unix.VMIN] = 1
-	configured.Cc[unix.VTIME] = 0
+	configured.Cc[unix.VMIN] = 0
+	configured.Cc[unix.VTIME] = 1
 	if err := unix.IoctlSetTermios(fd, unix.TIOCSETA, &configured); err != nil {
 		_ = tty.Close()
 		return nil, fmt.Errorf("configure pause controls: %w", err)
 	}
 
 	doneCh := make(chan struct{})
+	stopCh := make(chan struct{})
 
 	go func() {
 		defer close(doneCh)
 
 		buffer := make([]byte, 1)
 		for {
-			_, err := tty.Read(buffer)
+			select {
+			case <-stopCh:
+				return
+			default:
+			}
+
+			n, err := tty.Read(buffer)
 			if err != nil {
 				return
+			}
+			if n == 0 {
+				continue
 			}
 
 			switch processControlKey(control, quit, buffer[0]) {
 			case "pause":
 				log.Printf("execution paused")
+				if err := runPauseMenu(tty, control, quit, bus); err != nil {
+					_, _ = fmt.Fprintf(tty, "\npause menu error: %v\n", err)
+					log.Printf("pause menu error: %v", err)
+				}
 			case "resume":
 				log.Printf("execution resumed")
 			case "quit":
@@ -340,8 +549,141 @@ func startPauseControls(control *runControl, quit func()) (func(), error) {
 	}()
 
 	return func() {
+		close(stopCh)
 		_ = term.Restore(fd, state)
 		_ = tty.Close()
 		<-doneCh
 	}, nil
+}
+
+func runPauseMenu(tty io.ReadWriter, control *runControl, quit func(), bus *emulator.Bus) error {
+	for control != nil && control.Paused() {
+		if _, err := fmt.Fprint(tty, "\nPause menu\n  r: resume\n  m: dump memory\n  q: quit\nchoice> "); err != nil {
+			return err
+		}
+
+		choice, err := readMenuChoice(tty)
+		if err != nil {
+			return err
+		}
+
+		switch choice {
+		case 'r', 'R':
+			control.SetPaused(false)
+			_, _ = fmt.Fprintln(tty, "resuming execution")
+			log.Printf("execution resumed")
+			return nil
+		case 'm', 'M':
+			startAddr, err := promptMemoryDumpAddress(tty)
+			if err != nil {
+				_, _ = fmt.Fprintf(tty, "invalid address: %v\n", err)
+				continue
+			}
+
+			if err := dumpMemoryBlock(tty, bus, startAddr, pauseDumpInstructionCount); err != nil {
+				_, _ = fmt.Fprintf(tty, "dump failed: %v\n", err)
+				continue
+			}
+		case 'q', 'Q':
+			_, _ = fmt.Fprintln(tty, "stopping execution")
+			if quit != nil {
+				quit()
+			}
+			log.Printf("execution stopping")
+			return nil
+		default:
+			_, _ = fmt.Fprintf(tty, "unknown option %q\n", string(choice))
+		}
+	}
+
+	return nil
+}
+
+func readMenuChoice(tty io.Reader) (byte, error) {
+	buffer := make([]byte, 1)
+	for {
+		if _, err := tty.Read(buffer); err != nil {
+			return 0, err
+		}
+
+		switch buffer[0] {
+		case '\r', '\n':
+			continue
+		default:
+			return buffer[0], nil
+		}
+	}
+}
+
+func promptMemoryDumpAddress(tty io.ReadWriter) (uint16, error) {
+	line, err := readInteractiveLine(tty, "start address (hex, e.g. 0xD000 or $D000)> ")
+	if err != nil {
+		return 0, err
+	}
+
+	return parseHexAddress(line)
+}
+
+func readInteractiveLine(tty io.ReadWriter, prompt string) (string, error) {
+	if _, err := fmt.Fprint(tty, prompt); err != nil {
+		return "", err
+	}
+
+	buffer := make([]byte, 1)
+	var builder strings.Builder
+	for {
+		if _, err := tty.Read(buffer); err != nil {
+			return "", err
+		}
+
+		switch buffer[0] {
+		case '\r', '\n':
+			_, _ = fmt.Fprint(tty, "\n")
+			return strings.TrimSpace(builder.String()), nil
+		case 0x7F, 0x08:
+			if builder.Len() == 0 {
+				continue
+			}
+			current := builder.String()
+			builder.Reset()
+			builder.WriteString(current[:len(current)-1])
+			_, _ = fmt.Fprint(tty, "\b \b")
+		default:
+			if buffer[0] < 0x20 || buffer[0] > 0x7E {
+				continue
+			}
+			builder.WriteByte(buffer[0])
+			_, _ = tty.Write(buffer)
+		}
+	}
+}
+
+func parseHexAddress(raw string) (uint16, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, fmt.Errorf("address is required")
+	}
+
+	if strings.HasPrefix(value, "$") {
+		value = "0x" + value[1:]
+	} else if !strings.HasPrefix(value, "0x") && !strings.HasPrefix(value, "0X") {
+		value = "0x" + value
+	}
+
+	parsed, err := strconv.ParseUint(value, 0, 16)
+	if err != nil {
+		return 0, fmt.Errorf("invalid 16-bit address %q: %w", raw, err)
+	}
+
+	return uint16(parsed), nil
+}
+
+func dumpMemoryBlock(w io.Writer, bus *emulator.Bus, start uint16, instructionCount int) error {
+	lines, err := cpu.DisassembleBlock(bus, start, instructionCount)
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintf(w, "\n%s\n", cpu.FormatDisassembly(lines))
+	return err
 }

@@ -67,6 +67,18 @@ func (b *Bus) Read(addr uint16) (byte, error) {
 	return m.device.Read(addr)
 }
 
+func (b *Bus) ReadWord(addr uint16) (uint16, error) {
+	lo, err := b.Read(addr)
+	if err != nil {
+		return 0, err
+	}
+	hi, err := b.Read(addr + 1)
+	if err != nil {
+		return 0, err
+	}
+	return uint16(hi)<<8 | uint16(lo), nil
+}
+
 func (b *Bus) Write(addr uint16, value byte) error {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

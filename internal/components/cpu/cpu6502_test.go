@@ -74,8 +74,8 @@ func newTestCPUAt(t *testing.T, resetVector uint16, program []byte) (*CPU6502, *
 		}
 	}
 
-	c := NewCPU6502("cpu", resetVector)
-	if err := c.Reset(context.Background()); err != nil {
+	c := NewCPU6502("cpu")
+	if err := c.Reset(context.Background(), bus); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 
@@ -117,8 +117,8 @@ func newTraceCPUAt(t *testing.T, resetVector uint16, program []byte) (*CPU6502, 
 		}
 	}
 
-	c := NewCPU6502("cpu", resetVector)
-	if err := c.Reset(context.Background()); err != nil {
+	c := NewCPU6502("cpu")
+	if err := c.Reset(context.Background(), bus); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	trace.clearTrace()
@@ -174,8 +174,9 @@ func TestCPU6502_ProgramFlow(t *testing.T) {
 		}
 	}
 
-	c := NewCPU6502("cpu", 0x0200)
-	if err := c.Reset(context.Background()); err != nil {
+	c := NewCPU6502("cpu")
+	c.SetPC(0x0200)
+	if err := c.Reset(context.Background(), bus); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 
@@ -220,8 +221,9 @@ func TestCPU6502_InstructionResumesOnNextCycle(t *testing.T) {
 		}
 	}
 
-	c := NewCPU6502("cpu", 0x0200)
-	if err := c.Reset(context.Background()); err != nil {
+	c := NewCPU6502("cpu")
+	c.SetPC(0x0200)
+	if err := c.Reset(context.Background(), bus); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 
@@ -294,6 +296,45 @@ func TestCPU6502_TraceWriterMarksRevisitedPC(t *testing.T) {
 	}
 	if !strings.Contains(got, "2       $0201  NEW     4C 00 02  JMP  $0200") {
 		t.Fatalf("expected intermediate JMP trace line, got:\n%s", got)
+	}
+}
+
+func TestDisassembleBlock(t *testing.T) {
+	program := []byte{0xA9, 0x42, 0xAA, 0x00}
+	_, bus := newTestCPU(t, program)
+
+	lines, err := DisassembleBlock(bus, 0x0200, 3)
+	if err != nil {
+		t.Fatalf("disassemble block: %v", err)
+	}
+
+	got := FormatDisassembly(lines)
+	want := strings.Join([]string{
+		"PC     BYTES     ASM",
+		"$0200  A9 42     LDA  #$42",
+		"$0202  AA        TAX  ",
+		"$0203  00        BRK  ",
+	}, "\n")
+
+	if got != want {
+		t.Fatalf("unexpected disassembly output:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestDisassembleBlockFormatsUnsupportedOpcodeAsData(t *testing.T) {
+	program := []byte{0x02, 0xEA}
+	_, bus := newTestCPU(t, program)
+
+	lines, err := DisassembleBlock(bus, 0x0200, 2)
+	if err != nil {
+		t.Fatalf("disassemble block: %v", err)
+	}
+
+	if lines[0].Mnemonic != ".DB" || lines[0].Operand != "$02" {
+		t.Fatalf("unexpected fallback disassembly: %+v", lines[0])
+	}
+	if lines[1].Mnemonic != "NOP" {
+		t.Fatalf("expected second opcode to remain decodable, got %+v", lines[1])
 	}
 }
 
@@ -379,8 +420,9 @@ func TestCPU6502_UnsupportedOpcode(t *testing.T) {
 		t.Fatalf("seed RAM: %v", err)
 	}
 
-	c := NewCPU6502("cpu", 0x0200)
-	if err := c.Reset(context.Background()); err != nil {
+	c := NewCPU6502("cpu")
+	c.SetPC(0x0200)
+	if err := c.Reset(context.Background(), bus); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 

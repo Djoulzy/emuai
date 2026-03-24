@@ -16,7 +16,7 @@ func NewKeyboard(name string) *Keyboard {
 
 func (k *Keyboard) Name() string { return k.name }
 
-func (k *Keyboard) Reset(_ context.Context) error { return nil }
+func (k *Keyboard) Reset(_ context.Context, _ *emulator.Bus) error { return nil }
 
 func (k *Keyboard) Tick(_ context.Context, _ emulator.Tick, _ *emulator.Bus) error { return nil }
 

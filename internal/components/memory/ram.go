@@ -33,7 +33,7 @@ func (r *RAM) Name() string {
 	return r.name
 }
 
-func (r *RAM) Reset(_ context.Context) error {
+func (r *RAM) Reset(_ context.Context, bus *emulator.Bus) error {
 	for i := range r.data {
 		r.data[i] = 0
 	}

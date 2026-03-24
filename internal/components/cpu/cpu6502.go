@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 
 	"github.com/Djoulzy/emuai/internal/emulator"
@@ -20,6 +21,7 @@ const (
 	flagN byte = 1 << 7 // Negative
 
 	vectorNMI uint16 = 0xFFFA
+	vectorRST uint16 = 0xFFFC
 	vectorIRQ uint16 = 0xFFFE
 )
 
@@ -55,8 +57,7 @@ type traceByte struct {
 // Each motherboard tick executes exactly one CPU cycle:
 // opcode fetch, then one micro-op per subsequent cycle.
 type CPU6502 struct {
-	name        string
-	resetVector uint16
+	name string
 
 	A  byte
 	X  byte
@@ -80,8 +81,8 @@ type CPU6502 struct {
 	traceVisitedPC map[uint16]uint32
 }
 
-func NewCPU6502(name string, resetVector uint16) *CPU6502 {
-	newCPU := &CPU6502{name: name, resetVector: resetVector, haltOnBRK: true}
+func NewCPU6502(name string) *CPU6502 {
+	newCPU := &CPU6502{name: name, haltOnBRK: true}
 	newCPU.initLanguage()
 	return newCPU
 }
@@ -90,13 +91,13 @@ func (c *CPU6502) Name() string {
 	return c.name
 }
 
-func (c *CPU6502) Reset(_ context.Context) error {
+func (c *CPU6502) Reset(_ context.Context, bus *emulator.Bus) error {
 	c.A = 0
 	c.X = 0
 	c.Y = 0
 	c.SP = 0xFD
 	c.P = flagI | flagU
-	c.PC = c.resetVector
+	c.PC, _ = bus.ReadWord(vectorRST) // Should be $FA62
 	c.halted = false
 	c.current = nil
 	c.tmp8 = 0
@@ -108,7 +109,12 @@ func (c *CPU6502) Reset(_ context.Context) error {
 	c.pendingNMI = false
 	c.traceHeaderOut = false
 	c.traceVisitedPC = make(map[uint16]uint32)
+	log.Printf("CPU reset complete: PC = 0x%04X", c.PC)
 	return nil
+}
+
+func (c *CPU6502) SetPC(addr uint16) {
+	c.PC = addr
 }
 
 func (c *CPU6502) Tick(_ context.Context, tick emulator.Tick, bus *emulator.Bus) error {

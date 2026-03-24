@@ -1,0 +1,7 @@
+roms:
+  - name: apple2-system-bank-d
+    path: D.bin
+    start: 0xD000
+  - name: apple2-system-bank-ef
+    path: EF.bin
+    start: 0xE000

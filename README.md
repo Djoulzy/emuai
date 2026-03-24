@@ -47,17 +47,43 @@ Modular 8-bit machine emulator scaffold in Go.
 
 ## Running A Binary
 
-- Use `go run ./cmd/emuai -bin assets/6502_functional_test.bin -load-addr 0x0400` to load a raw binary into RAM and execute it from that address.
-- Use `-pc` when the CPU must start from an address different from the binary load address.
+- Use `go run ./cmd/emuai -bin assets/6502_functional_test.bin -load-addr 0x0400` to load a raw binary into RAM and set the reset vector to that address.
+- The `-pc` option is deprecated and ignored at launch; startup always uses the CPU reset vector at `$FFFC`.
 - Use `-stop-pc` to stop cleanly before executing the instruction at a specific program counter value.
-- Example: `go run ./cmd/emuai -bin assets/6502_functional_test.bin -load-addr 0x0400 -pc 0x040A`.
-- Example with success trap: `./bin/emuai -bin assets/6502_functional_test.bin -load-addr 0x0000 -pc 0x0400 -stop-pc 0x3469`.
+- Example: `go run ./cmd/emuai -bin assets/6502_functional_test.bin -load-addr 0x0400`.
+- Example with success trap: `./bin/emuai -bin assets/6502_functional_test.bin -load-addr 0x0400 -stop-pc 0x3469`.
 - Use `-max-cycles` to stop after a specific number of motherboard cycles.
 - Use `-timeout` to cap wall-clock runtime, or leave it at `0` to run until halt, cycle limit, or manual interruption.
 - Use `-realtime` if you explicitly want clock-driven execution; by default the CLI steps as fast as possible.
 - External binaries loaded with `-bin` use real `BRK` interrupt behavior instead of stopping the emulator on `BRK`.
-- If `-bin` is omitted, the built-in demo program is still loaded into RAM.
-- The binary is loaded after motherboard reset so the RAM contents are preserved for execution.
+- If neither `-bin` nor `-rom-config` is provided, the CLI boots the default Apple II ROM set from `ROMs/apple2-roms.yaml`.
+- The machine state is cleared first, then boot sources are loaded, and only then is the CPU reset triggered so the reset vector sees the final ROM/RAM contents.
+
+## Loading ROMs From YAML
+
+- Use `-rom-config` to load one or more ROM images into RAM from a YAML file.
+- Each ROM entry defines a `path` and a `start` address; paths are resolved relative to the YAML file.
+- Example: `go run ./cmd/emuai -rom-config ROMs/apple2-roms.yaml`.
+- If `-rom-config` is omitted, the default Apple II ROM config at `ROMs/apple2-roms.yaml` is used automatically.
+
+Example configuration:
+
+```yaml
+roms:
+  - name: apple2-system-bank-d
+    path: D.bin
+    start: 0xD000
+  - name: apple2-system-bank-ef
+    path: EF.bin
+    start: 0xE000
+```
+
+  ## Pause Menu And Memory Dump
+
+  - Press space while the emulator is running to open the pause menu.
+  - In the pause menu, use `r` to resume, `m` to dump memory as 6502 assembly, and `q` to stop execution.
+  - The memory dump prompts for a start address and prints 16 decoded instructions using the same byte and assembly view as the CPU trace.
+  - Accepted address formats are `0xD000`, `$D000`, or `D000`.
 
 ## Next Steps
 
