@@ -151,8 +151,16 @@ func main() {
 
 	processor := cpu.NewCPU6502("cpu-main")
 	processor.SetHaltOnBRK(false)
+	var traceOverlay *video.TraceOverlay
+	if video.Backend(*videoBackend) == video.BackendVulkan {
+		traceOverlay = video.NewTraceOverlay(256)
+	}
 	if *trace {
-		processor.SetTraceWriter(os.Stdout)
+		traceWriter := io.Writer(os.Stdout)
+		if traceOverlay != nil {
+			traceWriter = io.MultiWriter(os.Stdout, traceOverlay)
+		}
+		processor.SetTraceWriter(traceWriter)
 	}
 	soundDevice := sound.NewNullSound("sound-main")
 	keyboardDevice := peripheral.NewKeyboard("kbd-main")
@@ -170,6 +178,8 @@ func main() {
 			Height:    *videoHeight,
 			RefreshHz: *videoRefreshHz,
 		},
+		Trace:   traceOverlay,
+		TraceOn: *trace,
 	}, video.AppleIIeOptions{
 		CharacterROM: characterROM,
 	})

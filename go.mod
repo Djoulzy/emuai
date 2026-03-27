@@ -9,4 +9,6 @@ require (
 	golang.org/x/term v0.41.0
 )
 
-require gopkg.in/yaml.v3 v3.0.1 // indirect
+require gopkg.in/yaml.v3 v3.0.1
+
+require golang.org/x/image v0.31.0 // indirect

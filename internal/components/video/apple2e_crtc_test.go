@@ -179,3 +179,23 @@ func TestAppleIIeCRTCReadsTextPageFromBusMemory(t *testing.T) {
 		t.Fatal("expected rendered glyph pixels from bus-backed text page")
 	}
 }
+
+func TestAppleIIeCRTCPreservesTraceConfig(t *testing.T) {
+	overlay := NewTraceOverlay(16)
+	crtc, err := NewAppleIIeCRTC("crtc", Config{
+		Backend: BackendNull,
+		Trace:   overlay,
+		TraceOn: true,
+	}, AppleIIeOptions{})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	if crtc.cfg.Trace != overlay {
+		t.Fatal("expected trace overlay to be preserved in renderer config")
+	}
+	if !crtc.cfg.TraceOn {
+		t.Fatal("expected trace flag to be preserved in renderer config")
+	}
+}

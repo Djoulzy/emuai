@@ -139,6 +139,10 @@ func newAppleIIeCRTC(name string, cfg Config, options AppleIIeOptions, renderer 
 	if cfg.ClockHz != 0 {
 		base.ClockHz = cfg.ClockHz
 	}
+	if cfg.Trace != nil {
+		base.Trace = cfg.Trace
+	}
+	base.TraceOn = cfg.TraceOn
 	if cfg.CRT.Width != 0 {
 		base.CRT.Width = cfg.CRT.Width
 	}

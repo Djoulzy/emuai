@@ -26,6 +26,8 @@ type Config struct {
 	Backend Backend
 	ClockHz uint64
 	CRT     CRTConfig
+	Trace   *TraceOverlay
+	TraceOn bool
 }
 
 func DefaultCRTConfig() CRTConfig {

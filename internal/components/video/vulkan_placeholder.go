@@ -210,9 +210,16 @@ func (r *VulkanRenderer) Present(frame Frame) error {
 	var presentErr error
 	r.doOnMainThread(func() {
 		r.frameCount = frame.Sequence
-		presentFrameInWindow(r.window, frame)
+		traceText := ""
+		if r.cfg.Trace != nil {
+			traceText = r.cfg.Trace.Text(vulkanTraceVisibleLines)
+		}
+		presentedFrame := composeFrameWithTrace(frame, traceText, r.cfg.TraceOn)
+		presentFrameInWindow(r.window, presentedFrame)
 		if frame.Sequence == 1 || frame.Sequence%30 == 0 {
-			r.window.SetTitle(fmt.Sprintf("%s - frame %d - %dx%d", r.titlePrefix, frame.Sequence, frame.Width, frame.Height))
+			w := presentedFrame.Width
+			h := presentedFrame.Height
+			r.window.SetTitle(fmt.Sprintf("%s - frame %d - %dx%d", r.titlePrefix, frame.Sequence, w, h))
 		}
 		glfw.PollEvents()
 		if r.window.ShouldClose() {
@@ -265,6 +272,7 @@ func (r *VulkanRenderer) closeLocked() {
 func scaledWindowSize(cfg Config) (int, int) {
 	width := cfg.CRT.Width * 3
 	height := cfg.CRT.Height * 3
+	width += vulkanTracePanelWidth
 	if width < 640 {
 		width = 640
 	}
