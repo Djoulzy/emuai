@@ -53,6 +53,10 @@ type traceByte struct {
 	valid bool
 }
 
+type traceStatusWriter interface {
+	SetCPUState(a byte, x byte, y byte, sp byte, p byte)
+}
+
 // CPU6502 is a cycle-sliced skeleton for a MOS 6502-like core.
 // Each motherboard tick executes exactly one CPU cycle:
 // opcode fetch, then one micro-op per subsequent cycle.
@@ -477,21 +481,15 @@ func (c *CPU6502) traceInstruction(cycle uint64, pc uint16, opcode byte, instr *
 		return
 	}
 
+	c.updateTraceStatus()
 	c.writeTraceHeader()
-	visit := c.traceVisitMarker(pc)
-	rawBytes := c.traceRawBytes(opcode, c.traceOperandBytes(bus, pc, instr.bytes))
 	mnemonic, operand := c.traceAssembly(instr, pc, bus)
 	_, _ = fmt.Fprintf(
 		c.traceWriter,
-		"%s  %s  %s  %s  %s %s  %s %s\n",
-		c.traceColor(traceAnsiDim, fmt.Sprintf("%-6d", cycle)),
+		"%s  %s  %s\n",
 		c.traceColor(traceAnsiPC, fmt.Sprintf("%-5s", fmt.Sprintf("$%04X", pc))),
-		visit,
-		c.traceColor(traceAnsiBytes, fmt.Sprintf("%-8s", rawBytes)),
-		c.traceColor(traceAnsiMnemonic, fmt.Sprintf("%-4s", mnemonic)),
-		c.traceColor(traceAnsiOperand, fmt.Sprintf("%-13s", operand)),
-		c.traceRegisterState(),
-		c.traceColor(traceAnsiFlags, c.flagStatusString()),
+		c.traceColor(traceAnsiBytes, fmt.Sprintf("%-3s", fmt.Sprintf("%02X", opcode))),
+		c.traceColor(traceAnsiMnemonic, fmt.Sprintf("%-12s", strings.TrimSpace(fmt.Sprintf("%s %s", mnemonic, operand)))),
 	)
 }
 
@@ -500,18 +498,14 @@ func (c *CPU6502) traceInterrupt(cycle uint64, pc uint16, name string) {
 		return
 	}
 
+	c.updateTraceStatus()
 	c.writeTraceHeader()
-	visit := c.traceVisitMarker(pc)
 	_, _ = fmt.Fprintf(
 		c.traceWriter,
-		"%s  %s  %s  %s  %s  %s %s\n",
-		c.traceColor(traceAnsiDim, fmt.Sprintf("%-6d", cycle)),
+		"%s  %s  %s\n",
 		c.traceColor(traceAnsiPC, fmt.Sprintf("%-5s", fmt.Sprintf("$%04X", pc))),
-		visit,
-		c.traceColor(traceAnsiBytes, fmt.Sprintf("%-8s", "")),
-		c.traceColor(traceAnsiInterrupt, fmt.Sprintf("%-18s", name)),
-		c.traceRegisterState(),
-		c.traceColor(traceAnsiFlags, c.flagStatusString()),
+		c.traceColor(traceAnsiInterrupt, fmt.Sprintf("%-3s", name)),
+		c.traceColor(traceAnsiInterrupt, fmt.Sprintf("%-12s", name)),
 	)
 }
 
@@ -522,16 +516,20 @@ func (c *CPU6502) writeTraceHeader() {
 
 	_, _ = fmt.Fprintf(
 		c.traceWriter,
-		"%s  %s  %s  %s  %s  %s %s\n",
-		c.traceColor(traceAnsiDim, fmt.Sprintf("%-6s", "CYC")),
+		"%s  %s  %s\n",
 		c.traceColor(traceAnsiPC, fmt.Sprintf("%-5s", "PC")),
-		c.traceColor(traceAnsiVisit, fmt.Sprintf("%-6s", "FLOW")),
-		c.traceColor(traceAnsiBytes, fmt.Sprintf("%-8s", "BYTES")),
-		c.traceColor(traceAnsiMnemonic, fmt.Sprintf("%-18s", "ASM")),
-		c.traceColor(traceAnsiRegister, "REGS"),
-		c.traceColor(traceAnsiFlags, "FLAGS"),
+		c.traceColor(traceAnsiBytes, fmt.Sprintf("%-3s", "OPC")),
+		c.traceColor(traceAnsiMnemonic, fmt.Sprintf("%-12s", "ASM")),
 	)
 	c.traceHeaderOut = true
+}
+
+func (c *CPU6502) updateTraceStatus() {
+	statusWriter, ok := c.traceWriter.(traceStatusWriter)
+	if !ok {
+		return
+	}
+	statusWriter.SetCPUState(c.A, c.X, c.Y, c.SP, c.P)
 }
 
 func (c *CPU6502) traceVisitMarker(pc uint16) string {

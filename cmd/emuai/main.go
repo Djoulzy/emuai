@@ -39,6 +39,13 @@ const (
 	resetVectorAddress        = 0xFFFC
 )
 
+func selectTraceWriter(traceOverlay *video.TraceOverlay, fallback io.Writer) io.Writer {
+	if traceOverlay != nil {
+		return traceOverlay
+	}
+	return fallback
+}
+
 type uint16Flag struct {
 	value uint16
 	set   bool
@@ -105,7 +112,7 @@ func (f *uint16Flag) Set(raw string) error {
 }
 
 func main() {
-	trace := flag.Bool("trace", false, "print each instruction as the CPU executes it")
+	trace := flag.Bool("trace", false, "enable CPU instruction trace output")
 	binaryPath := flag.String("bin", "", "path to a .bin file to load into RAM before execution")
 	romConfigPath := flag.String("rom-config", "", "path to a YAML file describing ROM images to load into memory")
 	timeout := flag.Duration("timeout", 0, "maximum wall-clock run duration; 0 disables timeout")
@@ -156,11 +163,7 @@ func main() {
 		traceOverlay = video.NewTraceOverlay(256)
 	}
 	if *trace {
-		traceWriter := io.Writer(os.Stdout)
-		if traceOverlay != nil {
-			traceWriter = io.MultiWriter(os.Stdout, traceOverlay)
-		}
-		processor.SetTraceWriter(traceWriter)
+		processor.SetTraceWriter(selectTraceWriter(traceOverlay, os.Stdout))
 	}
 	soundDevice := sound.NewNullSound("sound-main")
 	keyboardDevice := peripheral.NewKeyboard("kbd-main")

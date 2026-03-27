@@ -105,6 +105,27 @@ func TestProcessControlKeyQuit(t *testing.T) {
 	}
 }
 
+func TestSelectTraceWriter(t *testing.T) {
+	t.Run("prefers overlay when available", func(t *testing.T) {
+		fallback := &bytes.Buffer{}
+		overlay := video.NewTraceOverlay(8)
+
+		got := selectTraceWriter(overlay, fallback)
+		if got != overlay {
+			t.Fatal("expected trace overlay writer to be selected")
+		}
+	})
+
+	t.Run("falls back when overlay missing", func(t *testing.T) {
+		fallback := &bytes.Buffer{}
+
+		got := selectTraceWriter(nil, fallback)
+		if got != fallback {
+			t.Fatal("expected fallback writer to be selected")
+		}
+	})
+}
+
 func TestRunMachineStopsAtProgramCounter(t *testing.T) {
 	board, err := emulator.NewMotherboard(emulator.Config{FrequencyHz: motherboardFrequencyHz})
 	if err != nil {

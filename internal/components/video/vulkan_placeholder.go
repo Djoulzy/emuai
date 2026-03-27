@@ -211,10 +211,12 @@ func (r *VulkanRenderer) Present(frame Frame) error {
 	r.doOnMainThread(func() {
 		r.frameCount = frame.Sequence
 		traceText := ""
+		traceStatus := TraceStatus{}
 		if r.cfg.Trace != nil {
 			traceText = r.cfg.Trace.Text(vulkanTraceVisibleLines)
+			traceStatus = r.cfg.Trace.Status()
 		}
-		presentedFrame := composeFrameWithTrace(frame, traceText, r.cfg.TraceOn)
+		presentedFrame := composeFrameWithTrace(frame, traceText, traceStatus, r.cfg.TraceOn)
 		presentFrameInWindow(r.window, presentedFrame)
 		if frame.Sequence == 1 || frame.Sequence%30 == 0 {
 			w := presentedFrame.Width

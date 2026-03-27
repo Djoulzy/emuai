@@ -33,11 +33,11 @@ func TestCPU6502_FunctionalBinaryReachesSuccessLoop(t *testing.T) {
 	}
 
 	c := NewCPU6502("cpu")
-	c.SetPC(0x0400)
 	c.SetHaltOnBRK(false)
 	if err := c.Reset(context.Background(), bus); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
+	c.SetPC(0x0400)
 
 	const (
 		successLoopPC        = 0x3469

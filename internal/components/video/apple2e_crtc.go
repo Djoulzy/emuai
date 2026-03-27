@@ -249,6 +249,9 @@ func (c *AppleIIeCRTC) Tick(_ context.Context, tick emulator.Tick, bus *emulator
 	if c.blinkFrames%12 == 0 {
 		c.blinkOn = !c.blinkOn
 	}
+	if c.cfg.Trace != nil {
+		c.cfg.Trace.SetClock(tick.Cycle)
+	}
 	if err := c.renderer.Present(c.framebuffer.Snapshot(c.frameSequence)); err != nil {
 		return err
 	}

@@ -15,7 +15,11 @@ func TestComposeFrameWithTraceExtendsFrameAndDrawsPanel(t *testing.T) {
 	frame.Pixels[1*frame.Width+1] = 0xFF445566
 	frame.Pixels[1*frame.Width+2] = 0xFF445566
 
-	got := composeFrameWithTrace(frame, "CYC PC ASM\n0 $0200 LDA", true)
+	got := composeFrameWithTrace(frame, "$0200  A9   LDA #$42      A:00 X:00 Y:00 SP:FD P:24", TraceStatus{
+		Cycle:     128,
+		Registers: "A:00 X:00 Y:00 SP:FD P:24",
+		Flags:     "..U..I..",
+	}, true)
 
 	if got.Width != frame.Width+vulkanTracePanelWidth {
 		t.Fatalf("unexpected composite width %d", got.Width)
@@ -50,6 +54,24 @@ func TestComposeFrameWithTraceExtendsFrameAndDrawsPanel(t *testing.T) {
 	}
 	if !textFound {
 		t.Fatal("expected trace panel text pixels to be drawn")
+	}
+}
+
+func TestDefaultTraceStatusProvidesFallbacks(t *testing.T) {
+	status := defaultTraceStatus(true, TraceStatus{})
+	if status.Registers != "A:-- X:-- Y:-- SP:-- P:--" {
+		t.Fatalf("unexpected fallback registers %q", status.Registers)
+	}
+	if status.Flags != "-" {
+		t.Fatalf("unexpected fallback flags %q", status.Flags)
+	}
+
+	disabled := defaultTraceStatus(false, TraceStatus{Cycle: 99})
+	if disabled.Flags != "OFF" {
+		t.Fatalf("unexpected disabled flags %q", disabled.Flags)
+	}
+	if disabled.CycleString(false) != "--" {
+		t.Fatalf("unexpected disabled cycle string %q", disabled.CycleString(false))
 	}
 }
 

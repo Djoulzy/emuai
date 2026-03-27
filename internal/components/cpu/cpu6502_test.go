@@ -73,6 +73,12 @@ func newTestCPUAt(t *testing.T, resetVector uint16, program []byte) (*CPU6502, *
 			t.Fatalf("seed RAM: %v", err)
 		}
 	}
+	if err := bus.Write(0xFFFC, byte(resetVector)); err != nil {
+		t.Fatalf("write reset vector low: %v", err)
+	}
+	if err := bus.Write(0xFFFD, byte(resetVector>>8)); err != nil {
+		t.Fatalf("write reset vector high: %v", err)
+	}
 
 	c := NewCPU6502("cpu")
 	if err := c.Reset(context.Background(), bus); err != nil {
@@ -115,6 +121,12 @@ func newTraceCPUAt(t *testing.T, resetVector uint16, program []byte) (*CPU6502, 
 		if err := bus.Write(resetVector+uint16(i), b); err != nil {
 			t.Fatalf("seed trace RAM: %v", err)
 		}
+	}
+	if err := bus.Write(0xFFFC, byte(resetVector)); err != nil {
+		t.Fatalf("write reset vector low: %v", err)
+	}
+	if err := bus.Write(0xFFFD, byte(resetVector>>8)); err != nil {
+		t.Fatalf("write reset vector high: %v", err)
 	}
 
 	c := NewCPU6502("cpu")
@@ -174,8 +186,14 @@ func TestCPU6502_ProgramFlow(t *testing.T) {
 		}
 	}
 
+	if err := bus.Write(0xFFFC, 0x00); err != nil {
+		t.Fatalf("write reset vector low: %v", err)
+	}
+	if err := bus.Write(0xFFFD, 0x02); err != nil {
+		t.Fatalf("write reset vector high: %v", err)
+	}
+
 	c := NewCPU6502("cpu")
-	c.SetPC(0x0200)
 	if err := c.Reset(context.Background(), bus); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
@@ -220,9 +238,14 @@ func TestCPU6502_InstructionResumesOnNextCycle(t *testing.T) {
 			t.Fatalf("seed RAM: %v", err)
 		}
 	}
+	if err := bus.Write(0xFFFC, 0x00); err != nil {
+		t.Fatalf("write reset vector low: %v", err)
+	}
+	if err := bus.Write(0xFFFD, 0x02); err != nil {
+		t.Fatalf("write reset vector high: %v", err)
+	}
 
 	c := NewCPU6502("cpu")
-	c.SetPC(0x0200)
 	if err := c.Reset(context.Background(), bus); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
@@ -253,6 +276,7 @@ func TestCPU6502_InstructionResumesOnNextCycle(t *testing.T) {
 func TestCPU6502_TraceWriter(t *testing.T) {
 	program := []byte{0xA9, 0x42, 0xAA, 0x00}
 	c, bus := newTestCPU(t, program)
+	c.SetPC(0x0200)
 	writeBytes(t, bus, 0xFFFE, []byte{0x00, 0x40})
 
 	var trace bytes.Buffer
@@ -263,10 +287,10 @@ func TestCPU6502_TraceWriter(t *testing.T) {
 	ansiPattern := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	got := strings.TrimSpace(ansiPattern.ReplaceAllString(trace.String(), ""))
 	want := strings.Join([]string{
-		"CYC     PC     FLOW    BYTES     ASM                 REGS FLAGS",
-		"0       $0200  NEW     A9 42     LDA  #$42           A:00 X:00 Y:00 SP:FD P:24 ..U..I..",
-		"2       $0202  NEW     AA        TAX                 A:42 X:00 Y:00 SP:FD P:24 ..U..I..",
-		"4       $0203  NEW     00        BRK                 A:42 X:42 Y:00 SP:FD P:24 ..U..I..",
+		"PC     OPC  ASM         ",
+		"$0200  A9   LDA #$42    ",
+		"$0202  AA   TAX         ",
+		"$0203  00   BRK",
 	}, "\n")
 
 	if got != want {
@@ -277,6 +301,7 @@ func TestCPU6502_TraceWriter(t *testing.T) {
 func TestCPU6502_TraceWriterMarksRevisitedPC(t *testing.T) {
 	program := []byte{0xEA, 0x4C, 0x00, 0x02}
 	c, bus := newTestCPU(t, program)
+	c.SetPC(0x0200)
 
 	var trace bytes.Buffer
 	c.SetTraceWriter(&trace)
@@ -288,14 +313,14 @@ func TestCPU6502_TraceWriterMarksRevisitedPC(t *testing.T) {
 	ansiPattern := regexp.MustCompile(`\x1b\[[0-9;]*m`)
 	got := strings.TrimSpace(ansiPattern.ReplaceAllString(trace.String(), ""))
 
-	if !strings.Contains(got, "0       $0200  NEW     EA        NOP") {
-		t.Fatalf("expected first visit to mark PC as NEW, got:\n%s", got)
+	if strings.Contains(got, "NEW") || strings.Contains(got, "SEEN#") {
+		t.Fatalf("expected flow markers to be absent from trace, got:\n%s", got)
 	}
-	if !strings.Contains(got, "$0200  SEEN#2") {
-		t.Fatalf("expected revisited PC to be highlighted as SEEN#2, got:\n%s", got)
+	if !strings.Contains(got, "$0200  EA   NOP") {
+		t.Fatalf("expected simplified NOP trace line, got:\n%s", got)
 	}
-	if !strings.Contains(got, "2       $0201  NEW     4C 00 02  JMP  $0200") {
-		t.Fatalf("expected intermediate JMP trace line, got:\n%s", got)
+	if !strings.Contains(got, "$0201  4C   JMP $0200") {
+		t.Fatalf("expected simplified JMP trace line, got:\n%s", got)
 	}
 }
 
@@ -419,9 +444,14 @@ func TestCPU6502_UnsupportedOpcode(t *testing.T) {
 	if err := bus.Write(0x0200, 0x02); err != nil {
 		t.Fatalf("seed RAM: %v", err)
 	}
+	if err := bus.Write(0xFFFC, 0x00); err != nil {
+		t.Fatalf("write reset vector low: %v", err)
+	}
+	if err := bus.Write(0xFFFD, 0x02); err != nil {
+		t.Fatalf("write reset vector high: %v", err)
+	}
 
 	c := NewCPU6502("cpu")
-	c.SetPC(0x0200)
 	if err := c.Reset(context.Background(), bus); err != nil {
 		t.Fatalf("reset: %v", err)
 	}

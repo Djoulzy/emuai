@@ -41,3 +41,25 @@ func TestTraceOverlayPreservesPartialLine(t *testing.T) {
 		t.Fatalf("unexpected merged partial line %q, want %q", got, want)
 	}
 }
+
+func TestTraceOverlayTracksStatusAndClock(t *testing.T) {
+	overlay := NewTraceOverlay(8)
+	overlay.SetClock(12345)
+	overlay.SetCPUState(0x00, 0x01, 0x02, 0xFD, 0xA5)
+
+	_, err := overlay.Write([]byte("$0200  A9   LDA #$42\n"))
+	if err != nil {
+		t.Fatalf("write trace status: %v", err)
+	}
+
+	got := overlay.Status()
+	if got.Cycle != 12345 {
+		t.Fatalf("unexpected cycle %d", got.Cycle)
+	}
+	if got.Registers != "A:00 X:01 Y:02 SP:FD P:A5" {
+		t.Fatalf("unexpected registers %q", got.Registers)
+	}
+	if got.Flags != "NUIC" {
+		t.Fatalf("unexpected flags %q", got.Flags)
+	}
+}

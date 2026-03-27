@@ -33,7 +33,7 @@ Modular 8-bit machine emulator scaffold in Go.
 ## Running With Instruction Trace
 
 - Use `go run ./cmd/emuai -trace` to print each 6502 instruction as it starts executing.
-- Each trace line includes the motherboard cycle, program counter, a `FLOW` marker (`NEW` on first visit, `SEEN#n` on revisits), opcode bytes, mnemonic, CPU registers, the raw `P` value, and a decoded `flags=NVUBDIZC` view where unset flags are shown as `.`.
+- Each trace line now includes the program counter, the opcode byte, and the assembled instruction. Register and flag state are shown in the static trace status panel.
 
 ## Video Backends
 
