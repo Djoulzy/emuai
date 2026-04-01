@@ -571,13 +571,8 @@ func (c *AppleIIeCRTC) updateDisplayMode() {
 
 	if c.mode.HiRes {
 		c.videoMainMem = c.memory.MainHiRes[page]
-		if c.mode.Columns80 {
-			c.videoAuxMem = c.memory.AuxHiRes[page]
-			c.renderMode = appleIIeRenderDoubleHiRes
-		} else {
-			c.videoAuxMem = nil
-			c.renderMode = appleIIeRenderHiRes
-		}
+		c.videoAuxMem = nil
+		c.renderMode = appleIIeRenderHiRes
 		return
 	}
 
@@ -823,13 +818,8 @@ func (c *AppleIIeCRTC) activeVideoAddress(offset int, aux bool) (uint16, bool) {
 func (c *AppleIIeCRTC) drawCharacter(x, y, width, height int, value byte) {
 	glyphWidth := 7
 	glyphHeight := 8
-	scaleX := width / glyphWidth
-	if scaleX == 0 {
-		scaleX = 1
-	}
-	scaleY := height / glyphHeight
-	if scaleY == 0 {
-		scaleY = 1
+	if width <= 0 || height <= 0 {
+		return
 	}
 
 	inverse := value < 0x40
@@ -840,10 +830,44 @@ func (c *AppleIIeCRTC) drawCharacter(x, y, width, height int, value byte) {
 
 	glyphIndex := c.glyphIndexForTextValue(value, inverse)
 
-	for row := 0; row < glyphHeight; row++ {
-		glyphRow := c.characterROM[glyphIndex*glyphHeight+row]
-		for col := 0; col < glyphWidth; col++ {
-			bitOn := c.glyphRowBitOn(glyphRow, col)
+	if width >= glyphWidth && height >= glyphHeight {
+		scaleX := width / glyphWidth
+		scaleY := height / glyphHeight
+		if scaleX == 0 {
+			scaleX = 1
+		}
+		if scaleY == 0 {
+			scaleY = 1
+		}
+
+		renderWidth := glyphWidth * scaleX
+		renderHeight := glyphHeight * scaleY
+		xOffset := (width - renderWidth) / 2
+		yOffset := (height - renderHeight) / 2
+
+		for row := 0; row < glyphHeight; row++ {
+			glyphRow := c.characterROM[glyphIndex*glyphHeight+row]
+			for col := 0; col < glyphWidth; col++ {
+				bitOn := c.glyphRowBitOn(glyphRow, col)
+				if inverse && c.charROMKind == appleIIeCharacterROMClassic {
+					bitOn = !bitOn
+				}
+				color := appleIIeBlackColor
+				if bitOn {
+					color = c.textColor
+				}
+				c.fillRect(x+xOffset+col*scaleX, y+yOffset+row*scaleY, scaleX, scaleY, color)
+			}
+		}
+		return
+	}
+
+	for py := 0; py < height; py++ {
+		sourceRow := py * glyphHeight / height
+		glyphRow := c.characterROM[glyphIndex*glyphHeight+sourceRow]
+		for px := 0; px < width; px++ {
+			sourceCol := px * glyphWidth / width
+			bitOn := c.glyphRowBitOn(glyphRow, sourceCol)
 			if inverse && c.charROMKind == appleIIeCharacterROMClassic {
 				bitOn = !bitOn
 			}
@@ -851,7 +875,7 @@ func (c *AppleIIeCRTC) drawCharacter(x, y, width, height int, value byte) {
 			if bitOn {
 				color = c.textColor
 			}
-			c.fillRect(x+col*scaleX, y+row*scaleY, scaleX, scaleY, color)
+			c.framebuffer.SetPixel(x+px, y+py, color)
 		}
 	}
 }

@@ -34,6 +34,7 @@ const (
 
 	appleIIeAddressSpaceSize = 0x10000
 	appleIIeSlotROMMaxSize   = 0x0900
+	appleIIeTextPageSize     = 0x0400
 )
 
 type AppleIIeMemoryMode struct {
@@ -56,8 +57,13 @@ type AppleIIeMMU struct {
 	romLoaded  []bool
 	slotROMs   [8][]byte
 	activeSlot int
+	auxAccess  appleIIeAuxAccessOverride
 
 	mode AppleIIeMemoryMode
+}
+
+type appleIIeAuxAccessOverride struct {
+	pending bool
 }
 
 func NewAppleIIeMMU(name string) (*AppleIIeMMU, error) {
@@ -85,6 +91,7 @@ func (m *AppleIIeMMU) Reset(_ context.Context, _ *emulator.Bus) error {
 	}
 	m.mode = AppleIIeMemoryMode{}
 	m.activeSlot = 0
+	m.auxAccess = appleIIeAuxAccessOverride{}
 	return nil
 }
 
@@ -118,6 +125,10 @@ func (m *AppleIIeMMU) Read(addr uint16) (byte, error) {
 
 	if value, ok := m.readInternalROM(addr); ok {
 		return value, nil
+	}
+
+	if m.consumeAuxAccessOverride(addr) {
+		return m.aux[addr], nil
 	}
 
 	if m.useAuxRead(addr) {
@@ -183,6 +194,11 @@ func (m *AppleIIeMMU) Write(addr uint16, value byte) error {
 		return nil
 	case appleIIeMMUSwitchHiRes:
 		m.mode.HiRes = true
+		return nil
+	}
+
+	if m.consumeAuxAccessOverride(addr) {
+		m.aux[addr] = value
 		return nil
 	}
 
@@ -286,6 +302,14 @@ func (m *AppleIIeMMU) LoadSlotROMFile(slot int, path string) error {
 	}
 
 	return nil
+}
+
+func (m *AppleIIeMMU) ArmAuxSlotAccess() {
+	m.auxAccess.pending = true
+}
+
+func (m *AppleIIeMMU) ClearAuxSlotAccess() {
+	m.auxAccess.pending = false
 }
 
 func (m *AppleIIeMMU) readInternalROM(addr uint16) (byte, bool) {
@@ -402,9 +426,34 @@ func (m *AppleIIeMMU) useAuxWrite(addr uint16) bool {
 	return m.mode.RAMWriteAux
 }
 
+func (m *AppleIIeMMU) consumeAuxAccessOverride(addr uint16) bool {
+	if !m.auxAccess.pending {
+		return false
+	}
+	if addr < 0x0200 || addr >= 0xC000 {
+		return false
+	}
+	m.auxAccess.pending = false
+	return true
+}
+
 func softSwitchValue(enabled bool) byte {
 	if enabled {
 		return 0x80
 	}
 	return 0x00
+}
+
+const (
+	appleIIeTextPage1Base uint16 = 0x0400
+	appleIIeTextPage2Base uint16 = 0x0800
+)
+
+func pageIsAllZero(page []byte) bool {
+	for _, value := range page {
+		if value != 0x00 {
+			return false
+		}
+	}
+	return true
 }

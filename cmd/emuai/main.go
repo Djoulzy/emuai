@@ -135,8 +135,8 @@ func main() {
 	stopPC := &uint16Flag{}
 	realtime := flag.Bool("realtime", false, "run using the motherboard clock instead of stepping as fast as possible")
 	videoBackend := flag.String("video-backend", string(video.BackendNull), "video backend to use: null or vulkan")
-	videoWidth := flag.Int("video-width", 320, "video framebuffer width in pixels")
-	videoHeight := flag.Int("video-height", 240, "video framebuffer height in pixels")
+	videoWidth := flag.Int("video-width", 560, "video framebuffer width in pixels")
+	videoHeight := flag.Int("video-height", 384, "video framebuffer height in pixels")
 	videoRefreshHz := flag.Int("video-refresh-hz", 60, "video refresh rate in Hz")
 	flag.Var(stopPC, "stop-pc", "stop execution before the instruction at this program counter executes")
 	flag.Parse()
@@ -342,6 +342,13 @@ func mapAppleIIeSoftSwitches(bus *emulator.Bus, memoryDevice emulator.Addressabl
 	}
 
 	softSwitches := peripheral.NewAppleIIeSoftSwitches(keyboardDevice, videoDevice, soundDevice, memoryDevice)
+	var slot3Device emulator.AddressableDevice
+	if auxMemory, ok := memoryDevice.(interface {
+		ArmAuxSlotAccess()
+		ClearAuxSlotAccess()
+	}); ok {
+		slot3Device = peripheral.NewAppleIIe80ColumnCard("apple2e-slot3-80col", auxMemory)
+	}
 
 	mappings := []struct {
 		start  uint16
@@ -352,6 +359,7 @@ func mapAppleIIeSoftSwitches(bus *emulator.Bus, memoryDevice emulator.Addressabl
 		{start: 0xC000, end: 0xC01F, name: "apple2e-softswitches-low", device: softSwitches},
 		{start: 0xC030, end: 0xC03F, name: "apple2e-softswitches-speaker", device: softSwitches},
 		{start: 0xC050, end: 0xC05F, name: "apple2e-softswitches-video", device: softSwitches},
+		{start: 0xC0B0, end: 0xC0BF, name: "apple2e-slot3-80col", device: slot3Device},
 	}
 
 	for _, mapping := range mappings {

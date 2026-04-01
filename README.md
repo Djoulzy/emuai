@@ -43,6 +43,7 @@ Modular 8-bit machine emulator scaffold in Go.
 - The current Vulkan backend stops at window, instance, and surface bring-up; the swapchain upload path and CRT shader pipeline are still pending.
 - On macOS, `make build-vulkan` auto-detects MoltenVK in `VULKAN_SDK`, `~/VulkanSDK/latest/macOS/lib`, `/usr/local/lib`, and `/opt/homebrew/lib`, then injects the required runtime search paths into the binary.
 - Example: `make build-vulkan && ./bin/emuai -video-backend vulkan`.
+- The Apple IIe demo now defaults to a `560x384` framebuffer so both 40-column and 80-column text stay readable.
 - Tune the base framebuffer with `-video-width`, `-video-height`, and `-video-refresh-hz`.
 - The video package now contains a CRT-oriented configuration model, a framebuffer snapshot pipeline, and a renderer interface ready to host a Vulkan pass chain for phosphor persistence, scanlines, mask simulation, and curvature.
 
@@ -62,6 +63,7 @@ Modular 8-bit machine emulator scaffold in Go.
 - The optional `chargen.path` entry selects the Apple IIe character ROM; paths are resolved relative to the YAML file.
 - The optional `slots` block can declare one ROM per Apple II slot using `slot1` through `slot7`.
 - A slot ROM maps its first 256 bytes to `C100`-`C7FF` according to the selected slot; if the file is larger than 256 bytes, the remaining bytes are exposed as that slot's `C800` expansion ROM after the slot is accessed.
+- With the Apple IIe example config, the 80-column firmware is loaded in slot 3, so `PR#3` switches the machine to 80-column output.
 - Each ROM entry defines a `path` and a `start` address; paths are resolved relative to the YAML file.
 - Example: `go run ./cmd/emuai -rom-config ROMs/apple2-roms.yaml`.
 - If `-rom-config` is omitted, the default Apple II ROM config at `ROMs/apple2-roms.yaml` is used automatically.

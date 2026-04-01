@@ -307,6 +307,28 @@ func TestMapAppleIIeSoftSwitchesRoutesVideoKeyboardAndSound(t *testing.T) {
 	if columnsStatus != 0x80 {
 		t.Fatalf("unexpected 80-column status: got 0x%02X want 0x80", columnsStatus)
 	}
+	if got, err := mmu.ReadAux(0x0400); err != nil || got != 0x00 {
+		t.Fatalf("expected 80-column soft-switch alone not to populate aux text memory, got 0x%02X err=%v", got, err)
+	}
+
+	if _, err := bus.Read(0xC0B4); err != nil {
+		t.Fatalf("begin slot-3 transfer: %v", err)
+	}
+	if _, err := bus.Read(0xC0B2); err != nil {
+		t.Fatalf("read slot-3 handshake low phase: %v", err)
+	}
+	if got, err := bus.Read(0xC0B2); err != nil || got != 0x80 {
+		t.Fatalf("expected slot-3 handshake high phase, got 0x%02X err=%v", got, err)
+	}
+	if err := bus.Write(0x0400, 0xA0); err != nil {
+		t.Fatalf("slot-3 aux transfer write: %v", err)
+	}
+	if _, err := bus.Read(0xC0B6); err != nil {
+		t.Fatalf("finish slot-3 transfer: %v", err)
+	}
+	if got, err := mmu.ReadAux(0x0400); err != nil || got != 0xA0 {
+		t.Fatalf("expected slot-3 transfer to populate aux text memory, got 0x%02X err=%v", got, err)
+	}
 
 	if err := bus.Write(0xC000, 0); err != nil {
 		t.Fatalf("write 80STORE soft-switch: %v", err)
@@ -411,6 +433,79 @@ func TestMapAppleIIeSoftSwitchesRoutesVideoKeyboardAndSound(t *testing.T) {
 	}
 	if soundDevice.ToggleCount() != 1 {
 		t.Fatalf("unexpected speaker toggle count: got %d want 1", soundDevice.ToggleCount())
+	}
+}
+
+func TestTypingPR3Enables80ColumnMode(t *testing.T) {
+	romConfigPath, err := resolveRepositoryPath(filepath.Join("ROMs", "apple2e-roms.yaml"))
+	if err != nil {
+		t.Fatalf("resolve apple2e rom config: %v", err)
+	}
+
+	bus := emulator.NewBus()
+	mmu, err := memory.NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+	if err := bus.MapDevice(0x0000, 0xFFFF, "mmu", mmu); err != nil {
+		t.Fatalf("map MMU: %v", err)
+	}
+	if _, err := loadROMsFromConfig(mmu, romConfigPath); err != nil {
+		t.Fatalf("load ROM config: %v", err)
+	}
+
+	videoDevice, err := video.NewAppleIIeCRTC("video", video.Config{}, video.AppleIIeOptions{BankedMemory: mmu})
+	if err != nil {
+		t.Fatalf("new video device: %v", err)
+	}
+	t.Cleanup(func() { _ = videoDevice.Close() })
+
+	soundDevice := sound.NewNullSound("sound")
+	keyboardDevice := peripheral.NewKeyboard("keyboard")
+	if err := mapAppleIIeSoftSwitches(bus, mmu, videoDevice, soundDevice, keyboardDevice); err != nil {
+		t.Fatalf("mapAppleIIeSoftSwitches: %v", err)
+	}
+
+	processor := cpu.NewCPU6502("cpu")
+	processor.SetHaltOnBRK(false)
+	if err := processor.Reset(context.Background(), bus); err != nil {
+		t.Fatalf("reset CPU: %v", err)
+	}
+
+	for cycle := uint64(0); cycle < 500000; cycle++ {
+		if err := processor.Tick(context.Background(), emulator.Tick{Cycle: cycle}, bus); err != nil {
+			t.Fatalf("boot tick %d: %v", cycle, err)
+		}
+	}
+
+	for _, char := range []rune{'P', 'R', '#', '3'} {
+		keyboardDevice.HandleKeyEvent(emulator.KeyEvent{Rune: char, Action: emulator.KeyActionPress})
+	}
+	keyboardDevice.HandleKeyEvent(emulator.KeyEvent{Code: emulator.KeyCodeEnter, Action: emulator.KeyActionPress})
+
+	for cycle := uint64(500000); cycle < 1500000; cycle++ {
+		if err := processor.Tick(context.Background(), emulator.Tick{Cycle: cycle}, bus); err != nil {
+			if videoDevice.Mode().Columns80 {
+				break
+			}
+			t.Fatalf("tick %d: %v", cycle, err)
+		}
+		if videoDevice.Mode().Columns80 {
+			break
+		}
+	}
+
+	if !videoDevice.Mode().Columns80 {
+		t.Fatalf("expected typing PR#3 to enable 80-column mode, got %s", videoDevice.ModeString())
+	}
+	if !videoDevice.Mode().Text {
+		t.Fatalf("expected PR#3 to leave the machine in text display mode, got %s", videoDevice.ModeString())
+	}
+	if videoDevice.Mode().HiRes {
+		t.Fatalf("expected PR#3 not to require hires display mode, got %s", videoDevice.ModeString())
+	}
+	if got, err := bus.Read(0xC01F); err != nil || got != 0x80 {
+		t.Fatalf("expected 80COL status=0x80 after PR#3, got 0x%02X err=%v", got, err)
 	}
 }
 

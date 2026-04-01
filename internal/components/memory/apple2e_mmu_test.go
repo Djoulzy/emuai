@@ -278,3 +278,81 @@ func TestAppleIIeMMUInternalC3AccessClearsActiveC8SlotROM(t *testing.T) {
 		t.Fatalf("expected internal C3 access to clear active C8 slot ROM, got 0x%02X err=%v", got, err)
 	}
 }
+
+func TestAppleIIeMMUArmAuxSlotAccessRedirectsNextWriteOnly(t *testing.T) {
+	mmu, err := NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+
+	mmu.ArmAuxSlotAccess()
+	if err := mmu.Write(0x0400, 0xA0); err != nil {
+		t.Fatalf("write aux slot transfer byte: %v", err)
+	}
+	if err := mmu.Write(0x0401, 0xB0); err != nil {
+		t.Fatalf("write main byte after aux slot transfer: %v", err)
+	}
+
+	if got, err := mmu.ReadAux(0x0400); err != nil || got != 0xA0 {
+		t.Fatalf("expected first slot transfer write to land in aux memory, got 0x%02X err=%v", got, err)
+	}
+	if got, err := mmu.ReadMain(0x0400); err != nil || got != 0x00 {
+		t.Fatalf("expected main memory to remain unchanged for aux slot transfer, got 0x%02X err=%v", got, err)
+	}
+	if got, err := mmu.ReadMain(0x0401); err != nil || got != 0xB0 {
+		t.Fatalf("expected second write to return to main memory, got 0x%02X err=%v", got, err)
+	}
+}
+
+func TestAppleIIeMMUArmAuxSlotAccessRedirectsNextReadOnly(t *testing.T) {
+	mmu, err := NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+
+	if err := mmu.Load(0x0400, []byte{0x11}); err != nil {
+		t.Fatalf("load main byte: %v", err)
+	}
+	if err := mmu.LoadAux(0x0400, []byte{0x22}); err != nil {
+		t.Fatalf("load aux byte: %v", err)
+	}
+
+	mmu.ArmAuxSlotAccess()
+	if got, err := mmu.Read(0x0400); err != nil || got != 0x22 {
+		t.Fatalf("expected armed slot transfer read to use aux memory, got 0x%02X err=%v", got, err)
+	}
+	if got, err := mmu.Read(0x0400); err != nil || got != 0x11 {
+		t.Fatalf("expected subsequent reads to fall back to main memory, got 0x%02X err=%v", got, err)
+	}
+}
+
+func TestAppleIIeMMUArmAuxSlotAccessIgnoresZeroPagePointerFetches(t *testing.T) {
+	mmu, err := NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+
+	if err := mmu.Load(0x0000, []byte{0x34, 0x12}); err != nil {
+		t.Fatalf("load main zero-page pointer bytes: %v", err)
+	}
+	if err := mmu.LoadAux(0x0000, []byte{0x78, 0x56}); err != nil {
+		t.Fatalf("load aux zero-page pointer bytes: %v", err)
+	}
+	if err := mmu.Load(0x1234, []byte{0x11}); err != nil {
+		t.Fatalf("load main target byte: %v", err)
+	}
+	if err := mmu.LoadAux(0x1234, []byte{0x22}); err != nil {
+		t.Fatalf("load aux target byte: %v", err)
+	}
+
+	mmu.ArmAuxSlotAccess()
+	if got, err := mmu.Read(0x0000); err != nil || got != 0x34 {
+		t.Fatalf("expected zero-page pointer fetch to remain on main memory, got 0x%02X err=%v", got, err)
+	}
+	if got, err := mmu.Read(0x0001); err != nil || got != 0x12 {
+		t.Fatalf("expected second zero-page pointer fetch to remain on main memory, got 0x%02X err=%v", got, err)
+	}
+	if got, err := mmu.Read(0x1234); err != nil || got != 0x22 {
+		t.Fatalf("expected armed target read after zero-page fetches to use aux memory, got 0x%02X err=%v", got, err)
+	}
+}

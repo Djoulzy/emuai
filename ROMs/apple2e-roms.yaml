@@ -2,6 +2,7 @@ chargen:
   path: Apple2e/Video_US.bin
 
 slots:
+  # PR#3 active le firmware 80 colonnes via la ROM du slot 3.
   slot3:
     path: cards/80col.bin
   # slot6:

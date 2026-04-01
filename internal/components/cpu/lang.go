@@ -1,6 +1,10 @@
 package cpu
 
-import "github.com/Djoulzy/emuai/internal/emulator"
+import (
+	"fmt"
+
+	"github.com/Djoulzy/emuai/internal/emulator"
+)
 
 type Instruction struct {
 	Name   string
@@ -708,6 +712,50 @@ func (c *CPU6502) relativeBranch(condition func() bool) []microOp {
 	}
 }
 
+func (c *CPU6502) zeroPageBitBranch(bit byte, branchOnSet bool) []microOp {
+	mask := byte(1 << bit)
+
+	return []microOp{
+		func(bus *emulator.Bus) error {
+			zp, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmpAddr = uint16(zp)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			value, err := bus.Read(c.tmpAddr)
+			if err != nil {
+				return err
+			}
+			c.tmpBase = uint16(value)
+			return nil
+		},
+		func(bus *emulator.Bus) error {
+			offset, err := c.fetchByte(bus)
+			if err != nil {
+				return err
+			}
+			c.tmp8 = offset
+			bitSet := byte(c.tmpBase)&mask != 0
+			if bitSet != branchOnSet {
+				c.skipMicroOps(2)
+			}
+			return nil
+		},
+		func(_ *emulator.Bus) error {
+			base := c.PC
+			c.branch(c.tmp8)
+			if !c.pageCrossed(base, c.PC) {
+				c.skipMicroOps(1)
+			}
+			return nil
+		},
+		noopMicroOp,
+	}
+}
+
 func (c *CPU6502) interruptSequence(vector uint16) []microOp {
 	return []microOp{
 		func(bus *emulator.Bus) error { return c.pushByte(bus, byte(c.PC>>8)) },
@@ -830,6 +878,10 @@ func (c *CPU6502) initLanguage() {
 	register(0x10, "BPL", 2, 2, c.relativeBranch(func() bool { return c.getFlag(flagN) == 0 }))
 	register(0x50, "BVC", 2, 2, c.relativeBranch(func() bool { return c.getFlag(flagV) == 0 }))
 	register(0x70, "BVS", 2, 2, c.relativeBranch(func() bool { return c.getFlag(flagV) != 0 }))
+	for bit := 0; bit < 8; bit++ {
+		register(byte(0x0F+bit*0x10), fmt.Sprintf("BBR%d zp,rel", bit), 3, 5, c.zeroPageBitBranch(byte(bit), false))
+		register(byte(0x8F+bit*0x10), fmt.Sprintf("BBS%d zp,rel", bit), 3, 5, c.zeroPageBitBranch(byte(bit), true))
+	}
 
 	register(0x24, "BIT zp", 2, 3, c.zeroPageRead(c.bit))
 	register(0x2C, "BIT abs", 3, 4, c.absoluteRead(c.bit))

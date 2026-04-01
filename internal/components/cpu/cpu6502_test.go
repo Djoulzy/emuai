@@ -222,6 +222,44 @@ func TestCPU6502_ProgramFlow(t *testing.T) {
 	}
 }
 
+func TestCPU6502_BitBranchInstructions(t *testing.T) {
+	t.Run("BBR branches when bit is clear", func(t *testing.T) {
+		c, bus := newTestCPUAt(t, 0x0200, []byte{
+			0x4F, 0x10, 0x03,
+			0xA9, 0x11,
+			0x00,
+			0xA9, 0x42,
+			0x00,
+		})
+		if err := bus.Write(0x0010, 0x00); err != nil {
+			t.Fatalf("seed zero page: %v", err)
+		}
+
+		runUntilHalt(t, c, bus, 64)
+		if c.A != 0x42 {
+			t.Fatalf("expected A=0x42 after BBR branch, got 0x%02X", c.A)
+		}
+	})
+
+	t.Run("BBS branches when bit is set", func(t *testing.T) {
+		c, bus := newTestCPUAt(t, 0x0200, []byte{
+			0xCF, 0x10, 0x03,
+			0xA9, 0x11,
+			0x00,
+			0xA9, 0x42,
+			0x00,
+		})
+		if err := bus.Write(0x0010, 0x10); err != nil {
+			t.Fatalf("seed zero page: %v", err)
+		}
+
+		runUntilHalt(t, c, bus, 64)
+		if c.A != 0x42 {
+			t.Fatalf("expected A=0x42 after BBS branch, got 0x%02X", c.A)
+		}
+	})
+}
+
 func TestCPU6502_InstructionResumesOnNextCycle(t *testing.T) {
 	bus := emulator.NewBus()
 	ram, err := memory.NewRAM("ram", 0x0000, 0xFFFF)
