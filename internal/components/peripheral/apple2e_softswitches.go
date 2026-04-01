@@ -18,6 +18,8 @@ const (
 	appleIIeSoftSwitchWriteIntCxROMOn    uint16 = 0xC007
 	appleIIeSoftSwitchWriteAltZPOff      uint16 = 0xC008
 	appleIIeSoftSwitchWriteAltZPOn       uint16 = 0xC009
+	appleIIeSoftSwitchWriteSlotC3ROMOff  uint16 = 0xC00A
+	appleIIeSoftSwitchWriteSlotC3ROMOn   uint16 = 0xC00B
 	appleIIeSoftSwitchWrite80ColOff      uint16 = 0xC00C
 	appleIIeSoftSwitchWrite80ColOn       uint16 = 0xC00D
 	appleIIeSoftSwitchWriteAltCharsetOff uint16 = 0xC00E
@@ -27,6 +29,7 @@ const (
 	appleIIeSoftSwitchReadRAMWrite       uint16 = 0xC014
 	appleIIeSoftSwitchReadIntCxROM       uint16 = 0xC015
 	appleIIeSoftSwitchReadAltZP          uint16 = 0xC016
+	appleIIeSoftSwitchReadSlotC3ROM      uint16 = 0xC017
 	appleIIeSoftSwitchRead80Store        uint16 = 0xC018
 	appleIIeSoftSwitchReadVBlank         uint16 = 0xC019
 	appleIIeSoftSwitchReadText           uint16 = 0xC01A
@@ -67,6 +70,7 @@ func (s *AppleIIeSoftSwitches) Read(addr uint16) (byte, error) {
 		appleIIeSoftSwitchReadRAMWrite,
 		appleIIeSoftSwitchReadIntCxROM,
 		appleIIeSoftSwitchReadAltZP,
+		appleIIeSoftSwitchReadSlotC3ROM,
 		appleIIeSoftSwitchRead80Store:
 		if s.memory != nil {
 			return s.memory.Read(addr)
@@ -115,6 +119,8 @@ func (s *AppleIIeSoftSwitches) Write(addr uint16, value byte) error {
 		appleIIeSoftSwitchWriteIntCxROMOn,
 		appleIIeSoftSwitchWriteAltZPOff,
 		appleIIeSoftSwitchWriteAltZPOn,
+		appleIIeSoftSwitchWriteSlotC3ROMOff,
+		appleIIeSoftSwitchWriteSlotC3ROMOn,
 		appleIIeSoftSwitchPage1,
 		appleIIeSoftSwitchPage2,
 		appleIIeSoftSwitchLoRes,

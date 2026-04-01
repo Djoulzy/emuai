@@ -1,6 +1,12 @@
 chargen:
   path: Apple2e/Video_US.bin
 
+slots:
+  slot3:
+    path: cards/80col.bin
+  # slot6:
+  #   path: cards/16SectorP5.bin
+
 roms:
   - name: apple2e-system-bank-c
     path: Apple2e/C.bin

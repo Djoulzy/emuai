@@ -63,6 +63,10 @@ type memoryFileLoader interface {
 	LoadFile(path string, addr uint16) error
 }
 
+type slotROMLoader interface {
+	LoadSlotROMFile(slot int, path string) error
+}
+
 type memoryResetter interface {
 	Reset(ctx context.Context, bus *emulator.Bus) error
 }
@@ -293,6 +297,24 @@ func loadROMsFromConfig(memoryDevice memoryFileLoader, configPath string) ([]str
 		}
 
 		loadedROMs = append(loadedROMs, fmt.Sprintf("loaded ROM %s from %s at 0x%04X", name, resolvedROMPath, rom.Start.Uint16()))
+	}
+
+	configuredSlots := set.ConfiguredSlots()
+	if len(configuredSlots) == 0 {
+		return loadedROMs, nil
+	}
+
+	slotLoader, ok := memoryDevice.(slotROMLoader)
+	if !ok {
+		return nil, fmt.Errorf("configured slot ROMs require a memory device with slot ROM support")
+	}
+
+	for _, slot := range configuredSlots {
+		resolvedSlotROMPath := set.ResolveSlotROMPath(slot, baseDir)
+		if err := slotLoader.LoadSlotROMFile(slot, resolvedSlotROMPath); err != nil {
+			return nil, fmt.Errorf("load slot %d ROM (%s): %w", slot, resolvedSlotROMPath, err)
+		}
+		loadedROMs = append(loadedROMs, fmt.Sprintf("loaded slot %d ROM from %s", slot, resolvedSlotROMPath))
 	}
 
 	return loadedROMs, nil

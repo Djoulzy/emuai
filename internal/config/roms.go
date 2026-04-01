@@ -13,8 +13,19 @@ import (
 type Address uint16
 
 type ROMSet struct {
-	Chargen *Asset `yaml:"chargen,omitempty"`
-	ROMs    []ROM  `yaml:"roms"`
+	Chargen *Asset   `yaml:"chargen,omitempty"`
+	Slots   SlotROMs `yaml:"slots,omitempty"`
+	ROMs    []ROM    `yaml:"roms"`
+}
+
+type SlotROMs struct {
+	Slot1 *Asset `yaml:"slot1,omitempty"`
+	Slot2 *Asset `yaml:"slot2,omitempty"`
+	Slot3 *Asset `yaml:"slot3,omitempty"`
+	Slot4 *Asset `yaml:"slot4,omitempty"`
+	Slot5 *Asset `yaml:"slot5,omitempty"`
+	Slot6 *Asset `yaml:"slot6,omitempty"`
+	Slot7 *Asset `yaml:"slot7,omitempty"`
 }
 
 type Asset struct {
@@ -61,6 +72,16 @@ func (s *ROMSet) Validate(baseDir string) error {
 		}
 	}
 
+	for _, slot := range s.ConfiguredSlots() {
+		asset := s.Slots.Asset(slot)
+		if asset == nil {
+			continue
+		}
+		if err := validateAssetPath(fmt.Sprintf("slots.slot%d", slot), asset.Path, baseDir); err != nil {
+			return err
+		}
+	}
+
 	for idx, rom := range s.ROMs {
 		if err := validateAssetPath(fmt.Sprintf("rom[%d]", idx), rom.Path, baseDir); err != nil {
 			return err
@@ -76,6 +97,54 @@ func (s *ROMSet) ResolveChargenPath(baseDir string) string {
 	}
 
 	return resolveAssetPath(baseDir, s.Chargen.Path)
+}
+
+func (s *ROMSet) ConfiguredSlots() []int {
+	if s == nil {
+		return nil
+	}
+
+	slots := make([]int, 0, 7)
+	for slot := 1; slot <= 7; slot++ {
+		if s.Slots.Asset(slot) != nil {
+			slots = append(slots, slot)
+		}
+	}
+	return slots
+}
+
+func (s *ROMSet) ResolveSlotROMPath(slot int, baseDir string) string {
+	if s == nil {
+		return ""
+	}
+
+	asset := s.Slots.Asset(slot)
+	if asset == nil {
+		return ""
+	}
+
+	return resolveAssetPath(baseDir, asset.Path)
+}
+
+func (s SlotROMs) Asset(slot int) *Asset {
+	switch slot {
+	case 1:
+		return s.Slot1
+	case 2:
+		return s.Slot2
+	case 3:
+		return s.Slot3
+	case 4:
+		return s.Slot4
+	case 5:
+		return s.Slot5
+	case 6:
+		return s.Slot6
+	case 7:
+		return s.Slot7
+	default:
+		return nil
+	}
 }
 
 func (r ROM) ResolvePath(baseDir string) string {

@@ -9,27 +9,31 @@ import (
 )
 
 const (
-	appleIIeMMUSwitch80StoreOff   uint16 = 0xC000
-	appleIIeMMUSwitch80StoreOn    uint16 = 0xC001
-	appleIIeMMUSwitchRAMReadOff   uint16 = 0xC002
-	appleIIeMMUSwitchRAMReadOn    uint16 = 0xC003
-	appleIIeMMUSwitchRAMWriteOff  uint16 = 0xC004
-	appleIIeMMUSwitchRAMWriteOn   uint16 = 0xC005
-	appleIIeMMUSwitchIntCxROMOff  uint16 = 0xC006
-	appleIIeMMUSwitchIntCxROMOn   uint16 = 0xC007
-	appleIIeMMUSwitchAltZPOff     uint16 = 0xC008
-	appleIIeMMUSwitchAltZPOn      uint16 = 0xC009
-	appleIIeMMUSwitchReadRAMRead  uint16 = 0xC013
-	appleIIeMMUSwitchReadRAMWrt   uint16 = 0xC014
-	appleIIeMMUSwitchReadIntCxROM uint16 = 0xC015
-	appleIIeMMUSwitchReadAltZP    uint16 = 0xC016
-	appleIIeMMUSwitchRead80Store  uint16 = 0xC018
-	appleIIeMMUSwitchPage1        uint16 = 0xC054
-	appleIIeMMUSwitchPage2        uint16 = 0xC055
-	appleIIeMMUSwitchLoRes        uint16 = 0xC056
-	appleIIeMMUSwitchHiRes        uint16 = 0xC057
+	appleIIeMMUSwitch80StoreOff    uint16 = 0xC000
+	appleIIeMMUSwitch80StoreOn     uint16 = 0xC001
+	appleIIeMMUSwitchRAMReadOff    uint16 = 0xC002
+	appleIIeMMUSwitchRAMReadOn     uint16 = 0xC003
+	appleIIeMMUSwitchRAMWriteOff   uint16 = 0xC004
+	appleIIeMMUSwitchRAMWriteOn    uint16 = 0xC005
+	appleIIeMMUSwitchIntCxROMOff   uint16 = 0xC006
+	appleIIeMMUSwitchIntCxROMOn    uint16 = 0xC007
+	appleIIeMMUSwitchAltZPOff      uint16 = 0xC008
+	appleIIeMMUSwitchAltZPOn       uint16 = 0xC009
+	appleIIeMMUSwitchSlotC3ROMOff  uint16 = 0xC00A
+	appleIIeMMUSwitchSlotC3ROMOn   uint16 = 0xC00B
+	appleIIeMMUSwitchReadRAMRead   uint16 = 0xC013
+	appleIIeMMUSwitchReadRAMWrt    uint16 = 0xC014
+	appleIIeMMUSwitchReadIntCxROM  uint16 = 0xC015
+	appleIIeMMUSwitchReadAltZP     uint16 = 0xC016
+	appleIIeMMUSwitchReadSlotC3ROM uint16 = 0xC017
+	appleIIeMMUSwitchRead80Store   uint16 = 0xC018
+	appleIIeMMUSwitchPage1         uint16 = 0xC054
+	appleIIeMMUSwitchPage2         uint16 = 0xC055
+	appleIIeMMUSwitchLoRes         uint16 = 0xC056
+	appleIIeMMUSwitchHiRes         uint16 = 0xC057
 
 	appleIIeAddressSpaceSize = 0x10000
+	appleIIeSlotROMMaxSize   = 0x0900
 )
 
 type AppleIIeMemoryMode struct {
@@ -37,6 +41,7 @@ type AppleIIeMemoryMode struct {
 	RAMWriteAux   bool
 	AltZeroPage   bool
 	InternalCxROM bool
+	SlotC3ROM     bool
 	Store80       bool
 	Page2         bool
 	HiRes         bool
@@ -45,10 +50,12 @@ type AppleIIeMemoryMode struct {
 type AppleIIeMMU struct {
 	name string
 
-	main      []byte
-	aux       []byte
-	internal  []byte
-	romLoaded []bool
+	main       []byte
+	aux        []byte
+	internal   []byte
+	romLoaded  []bool
+	slotROMs   [8][]byte
+	activeSlot int
 
 	mode AppleIIeMemoryMode
 }
@@ -77,6 +84,7 @@ func (m *AppleIIeMMU) Reset(_ context.Context, _ *emulator.Bus) error {
 		m.aux[idx] = 0
 	}
 	m.mode = AppleIIeMemoryMode{}
+	m.activeSlot = 0
 	return nil
 }
 
@@ -102,6 +110,8 @@ func (m *AppleIIeMMU) Read(addr uint16) (byte, error) {
 		return softSwitchValue(m.mode.InternalCxROM), nil
 	case appleIIeMMUSwitchReadAltZP:
 		return softSwitchValue(m.mode.AltZeroPage), nil
+	case appleIIeMMUSwitchReadSlotC3ROM:
+		return softSwitchValue(m.mode.SlotC3ROM), nil
 	case appleIIeMMUSwitchRead80Store:
 		return softSwitchValue(m.mode.Store80), nil
 	}
@@ -155,6 +165,12 @@ func (m *AppleIIeMMU) Write(addr uint16, value byte) error {
 		return nil
 	case appleIIeMMUSwitchAltZPOn:
 		m.mode.AltZeroPage = true
+		return nil
+	case appleIIeMMUSwitchSlotC3ROMOff:
+		m.mode.SlotC3ROM = false
+		return nil
+	case appleIIeMMUSwitchSlotC3ROMOn:
+		m.mode.SlotC3ROM = true
 		return nil
 	case appleIIeMMUSwitchPage1:
 		m.mode.Page2 = false
@@ -242,8 +258,45 @@ func (m *AppleIIeMMU) LoadAux(addr uint16, data []byte) error {
 	return nil
 }
 
+func (m *AppleIIeMMU) LoadSlotROM(slot int, data []byte) error {
+	if slot < 1 || slot > 7 {
+		return fmt.Errorf("apple2e-mmu: invalid slot %d", slot)
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("apple2e-mmu: slot %d ROM is empty", slot)
+	}
+	if len(data) > appleIIeSlotROMMaxSize {
+		return fmt.Errorf("apple2e-mmu: slot %d ROM too large: got %d bytes, max %d", slot, len(data), appleIIeSlotROMMaxSize)
+	}
+
+	rom := make([]byte, len(data))
+	copy(rom, data)
+	m.slotROMs[slot] = rom
+	return nil
+}
+
+func (m *AppleIIeMMU) LoadSlotROMFile(slot int, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("apple2e-mmu: read slot %d ROM %q: %w", slot, path, err)
+	}
+
+	if err := m.LoadSlotROM(slot, data); err != nil {
+		return fmt.Errorf("apple2e-mmu: load slot %d ROM %q: %w", slot, path, err)
+	}
+
+	return nil
+}
+
 func (m *AppleIIeMMU) readInternalROM(addr uint16) (byte, bool) {
+	if addr == 0xCFFF {
+		m.activeSlot = 0
+	}
+
 	if !m.romLoaded[addr] {
+		if value, ok := m.readSlotROM(addr); ok {
+			return value, true
+		}
 		return 0, false
 	}
 
@@ -251,17 +304,63 @@ func (m *AppleIIeMMU) readInternalROM(addr uint16) (byte, bool) {
 		return m.internal[addr], true
 	}
 
+	if addr >= 0xC300 && addr <= 0xC3FF && (m.mode.InternalCxROM || !m.mode.SlotC3ROM) {
+		m.activeSlot = 0
+	}
+
+	if value, ok := m.readSlotROM(addr); ok {
+		return value, true
+	}
+
 	if addr >= 0xC100 {
 		if m.mode.InternalCxROM {
 			return m.internal[addr], true
 		}
 
-		// Slot ROM devices are not modeled yet, so fall back to internal Cx ROM.
 		return m.internal[addr], true
 	}
 
 	if addr >= 0xC000 {
 		return m.internal[addr], true
+	}
+
+	return 0, false
+}
+
+func (m *AppleIIeMMU) readSlotROM(addr uint16) (byte, bool) {
+	if m.mode.InternalCxROM {
+		return 0, false
+	}
+
+	if addr >= 0xC100 && addr <= 0xC7FF {
+		slot := int((addr >> 8) & 0x000F)
+		if slot == 3 && !m.mode.SlotC3ROM {
+			return 0, false
+		}
+		rom := m.slotROMs[slot]
+		if len(rom) == 0 {
+			return 0, false
+		}
+
+		m.activeSlot = slot
+		offset := int(addr & 0x00FF)
+		if offset >= len(rom) {
+			return 0, false
+		}
+		return rom[offset], true
+	}
+
+	if addr >= 0xC800 && addr <= 0xCFFF && m.activeSlot >= 1 && m.activeSlot <= 7 {
+		rom := m.slotROMs[m.activeSlot]
+		if len(rom) <= 0x0100 {
+			return 0, false
+		}
+
+		offset := 0x0100 + int(addr-0xC800)
+		if offset >= len(rom) {
+			return 0, false
+		}
+		return rom[offset], true
 	}
 
 	return 0, false

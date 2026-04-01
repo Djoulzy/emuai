@@ -60,6 +60,8 @@ Modular 8-bit machine emulator scaffold in Go.
 
 - Use `-rom-config` to load one or more ROM images into RAM from a YAML file.
 - The optional `chargen.path` entry selects the Apple IIe character ROM; paths are resolved relative to the YAML file.
+- The optional `slots` block can declare one ROM per Apple II slot using `slot1` through `slot7`.
+- A slot ROM maps its first 256 bytes to `C100`-`C7FF` according to the selected slot; if the file is larger than 256 bytes, the remaining bytes are exposed as that slot's `C800` expansion ROM after the slot is accessed.
 - Each ROM entry defines a `path` and a `start` address; paths are resolved relative to the YAML file.
 - Example: `go run ./cmd/emuai -rom-config ROMs/apple2-roms.yaml`.
 - If `-rom-config` is omitted, the default Apple II ROM config at `ROMs/apple2-roms.yaml` is used automatically.
@@ -70,12 +72,16 @@ Example configuration:
 chargen:
   path: Apple2/3410036.bin
 
+slots:
+  slot6:
+    path: cards/16SectorP5.bin
+
 roms:
   - name: apple2-system-bank-d
-    path: D.bin
+    path: Apple2/D.bin
     start: 0xD000
   - name: apple2-system-bank-ef
-    path: EF.bin
+    path: Apple2/EF.bin
     start: 0xE000
 ```
 

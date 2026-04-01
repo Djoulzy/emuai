@@ -223,6 +223,46 @@ func TestLoadROMsFromConfig(t *testing.T) {
 	}
 }
 
+func TestLoadROMsFromConfigLoadsSlotROMs(t *testing.T) {
+	mmu, err := memory.NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+
+	tempDir := t.TempDir()
+	romPath := filepath.Join(tempDir, "monitor.bin")
+	slotROMPath := filepath.Join(tempDir, "disk2.bin")
+	romData := []byte{0xA9, 0x42, 0x00}
+	slotROMData := []byte{0xEA, 0xEA, 0x00}
+	if err := os.WriteFile(romPath, romData, 0o644); err != nil {
+		t.Fatalf("write ROM: %v", err)
+	}
+	if err := os.WriteFile(slotROMPath, slotROMData, 0o644); err != nil {
+		t.Fatalf("write slot ROM: %v", err)
+	}
+
+	configPath := filepath.Join(tempDir, "roms.yaml")
+	configData := []byte("slots:\n  slot6:\n    path: disk2.bin\nroms:\n  - name: monitor\n    path: monitor.bin\n    start: 0xD000\n")
+	if err := os.WriteFile(configPath, configData, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	loadedROMs, err := loadROMsFromConfig(mmu, configPath)
+	if err != nil {
+		t.Fatalf("load ROMs from config: %v", err)
+	}
+	if len(loadedROMs) != 2 {
+		t.Fatalf("unexpected loaded ROM count: got %d want 2", len(loadedROMs))
+	}
+
+	if got, err := mmu.Read(0xD000); err != nil || got != romData[0] {
+		t.Fatalf("unexpected system ROM byte: got 0x%02X err=%v", got, err)
+	}
+	if got, err := mmu.Read(0xC600); err != nil || got != slotROMData[0] {
+		t.Fatalf("unexpected slot ROM byte: got 0x%02X err=%v", got, err)
+	}
+}
+
 func TestMapAppleIIeSoftSwitchesRoutesVideoKeyboardAndSound(t *testing.T) {
 	bus := emulator.NewBus()
 	mmu, err := memory.NewAppleIIeMMU("mmu")
@@ -345,6 +385,16 @@ func TestMapAppleIIeSoftSwitchesRoutesVideoKeyboardAndSound(t *testing.T) {
 	}
 	if got, err := bus.Read(0xC015); err != nil || got != 0x80 {
 		t.Fatalf("expected INTCXROM status=0x80, got 0x%02X err=%v", got, err)
+	}
+
+	if got, err := bus.Read(0xC017); err != nil || got != 0x00 {
+		t.Fatalf("expected SLOTC3ROM status=0x00 by default, got 0x%02X err=%v", got, err)
+	}
+	if err := bus.Write(0xC00B, 0); err != nil {
+		t.Fatalf("write SLOTC3ROM-on soft-switch: %v", err)
+	}
+	if got, err := bus.Read(0xC017); err != nil || got != 0x80 {
+		t.Fatalf("expected SLOTC3ROM status=0x80, got 0x%02X err=%v", got, err)
 	}
 
 	keyboardDevice.HandleKeyEvent(emulator.KeyEvent{Rune: 'a', Action: emulator.KeyActionPress})
