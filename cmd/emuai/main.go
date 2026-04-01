@@ -181,8 +181,9 @@ func main() {
 			Height:    *videoHeight,
 			RefreshHz: *videoRefreshHz,
 		},
-		Trace:   traceOverlay,
-		TraceOn: *trace,
+		Trace:    traceOverlay,
+		TraceOn:  *trace,
+		Keyboard: keyboardDevice,
 	}, video.AppleIIeOptions{
 		CharacterROM: characterROM,
 	})
@@ -190,6 +191,13 @@ func main() {
 		log.Fatalf("create video: %v", err)
 	}
 	log.Printf("loaded Apple IIe character ROM %s", characterROMPath)
+
+	if err := board.Bus().MapDevice(0xC000, 0xC000, "keyboard-data", keyboardDevice); err != nil {
+		log.Fatalf("map keyboard data: %v", err)
+	}
+	if err := board.Bus().MapDevice(0xC010, 0xC010, "keyboard-strobe", keyboardDevice); err != nil {
+		log.Fatalf("map keyboard strobe: %v", err)
+	}
 
 	components := []emulator.ClockedComponent{
 		ram,

@@ -1,6 +1,10 @@
 package video
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/Djoulzy/emuai/internal/emulator"
+)
 
 const defaultClockHz uint64 = 1_000_000
 
@@ -23,11 +27,12 @@ type CRTConfig struct {
 }
 
 type Config struct {
-	Backend Backend
-	ClockHz uint64
-	CRT     CRTConfig
-	Trace   *TraceOverlay
-	TraceOn bool
+	Backend  Backend
+	ClockHz  uint64
+	CRT      CRTConfig
+	Trace    *TraceOverlay
+	TraceOn  bool
+	Keyboard emulator.KeyEventSink
 }
 
 func DefaultCRTConfig() CRTConfig {

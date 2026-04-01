@@ -143,6 +143,7 @@ func newAppleIIeCRTC(name string, cfg Config, options AppleIIeOptions, renderer 
 		base.Trace = cfg.Trace
 	}
 	base.TraceOn = cfg.TraceOn
+	base.Keyboard = cfg.Keyboard
 	if cfg.CRT.Width != 0 {
 		base.CRT.Width = cfg.CRT.Width
 	}

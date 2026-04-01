@@ -199,3 +199,26 @@ func TestAppleIIeCRTCPreservesTraceConfig(t *testing.T) {
 		t.Fatal("expected trace flag to be preserved in renderer config")
 	}
 }
+
+type testKeyEventSink struct{}
+
+func (testKeyEventSink) HandleKeyEvent(emulator.KeyEvent) {}
+
+func TestAppleIIeCRTCPreservesKeyboardConfig(t *testing.T) {
+	keyboard := testKeyEventSink{}
+	crtc, err := NewAppleIIeCRTC("crtc", Config{
+		Backend:  BackendNull,
+		Keyboard: keyboard,
+	}, AppleIIeOptions{})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	if crtc.cfg.Keyboard == nil {
+		t.Fatal("expected keyboard sink to be preserved in renderer config")
+	}
+	if _, ok := crtc.cfg.Keyboard.(testKeyEventSink); !ok {
+		t.Fatalf("unexpected keyboard sink type %T", crtc.cfg.Keyboard)
+	}
+}

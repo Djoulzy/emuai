@@ -59,6 +59,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/Djoulzy/emuai/internal/emulator"
 	"github.com/go-gl/glfw/v3.3/glfw"
 	vk "github.com/vulkan-go/vulkan"
 )
@@ -196,6 +197,8 @@ func (r *VulkanRenderer) initOnMainThread(cfg Config) error {
 	r.deviceName = deviceName
 	r.titlePrefix = fmt.Sprintf("emuai CRT [Vulkan] %s", deviceName)
 	r.window.SetTitle(fmt.Sprintf("%s - %dx%d @ %d Hz", r.titlePrefix, cfg.CRT.Width, cfg.CRT.Height, cfg.CRT.RefreshHz))
+	r.window.SetKeyCallback(r.handleKeyCallback)
+	r.window.SetCharCallback(r.handleCharCallback)
 	return nil
 }
 
@@ -358,6 +361,90 @@ func appendExtensionIfMissing(extensions []string, extension string) []string {
 		}
 	}
 	return append(extensions, extension)
+}
+
+func (r *VulkanRenderer) handleKeyCallback(_ *glfw.Window, key glfw.Key, _ int, action glfw.Action, mods glfw.ModifierKey) {
+	if r.cfg.Keyboard == nil {
+		return
+	}
+
+	eventAction, ok := translateGLFWAction(action)
+	if !ok {
+		return
+	}
+
+	code, ok := translateGLFWKey(key)
+	if !ok {
+		return
+	}
+
+	r.cfg.Keyboard.HandleKeyEvent(emulator.KeyEvent{
+		Code:      code,
+		Action:    eventAction,
+		Modifiers: translateGLFWModifiers(mods),
+	})
+}
+
+func (r *VulkanRenderer) handleCharCallback(_ *glfw.Window, char rune) {
+	if r.cfg.Keyboard == nil {
+		return
+	}
+
+	r.cfg.Keyboard.HandleKeyEvent(emulator.KeyEvent{
+		Rune:   char,
+		Action: emulator.KeyActionPress,
+	})
+}
+
+func translateGLFWAction(action glfw.Action) (emulator.KeyAction, bool) {
+	switch action {
+	case glfw.Press:
+		return emulator.KeyActionPress, true
+	case glfw.Repeat:
+		return emulator.KeyActionRepeat, true
+	case glfw.Release:
+		return emulator.KeyActionRelease, true
+	default:
+		return 0, false
+	}
+}
+
+func translateGLFWKey(key glfw.Key) (emulator.KeyCode, bool) {
+	switch key {
+	case glfw.KeyEnter, glfw.KeyKPEnter:
+		return emulator.KeyCodeEnter, true
+	case glfw.KeyEscape:
+		return emulator.KeyCodeEscape, true
+	case glfw.KeyBackspace:
+		return emulator.KeyCodeBackspace, true
+	case glfw.KeyDelete:
+		return emulator.KeyCodeDelete, true
+	case glfw.KeyTab:
+		return emulator.KeyCodeTab, true
+	case glfw.KeyLeft:
+		return emulator.KeyCodeLeft, true
+	case glfw.KeyRight:
+		return emulator.KeyCodeRight, true
+	case glfw.KeyUp:
+		return emulator.KeyCodeUp, true
+	case glfw.KeyDown:
+		return emulator.KeyCodeDown, true
+	case glfw.KeyHome:
+		return emulator.KeyCodeHome, true
+	case glfw.KeyEnd:
+		return emulator.KeyCodeEnd, true
+	default:
+		return emulator.KeyCodeUnknown, false
+	}
+}
+
+func translateGLFWModifiers(mods glfw.ModifierKey) emulator.KeyModifiers {
+	return emulator.KeyModifiers{
+		Shift:   mods&glfw.ModShift != 0,
+		Control: mods&glfw.ModControl != 0,
+		Alt:     mods&glfw.ModAlt != 0,
+		Super:   mods&glfw.ModSuper != 0,
+	}
 }
 
 func firstPhysicalDeviceName(instance vk.Instance) (string, error) {

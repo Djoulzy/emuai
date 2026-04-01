@@ -8,7 +8,6 @@ import (
 
 var (
 	ErrBusNoDevice = errors.New("bus: no mapped device for address")
-	ErrBusOverlap  = errors.New("bus: mapping overlaps existing range")
 )
 
 type mapping struct {
@@ -38,12 +37,6 @@ func (b *Bus) MapDevice(start, end uint16, name string, device AddressableDevice
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	for _, m := range b.mappings {
-		if rangesOverlap(start, end, m.start, m.end) {
-			return fmt.Errorf("%w: %s [0x%04X-0x%04X]", ErrBusOverlap, m.name, m.start, m.end)
-		}
-	}
 
 	b.mappings = append(b.mappings, mapping{
 		start:  start,
@@ -92,14 +85,24 @@ func (b *Bus) Write(addr uint16, value byte) error {
 }
 
 func (b *Bus) findMapping(addr uint16) (mapping, bool) {
-	for _, m := range b.mappings {
+	var (
+		best        mapping
+		found       bool
+		bestSpan    uint32
+		currentSpan uint32
+	)
+
+	for idx := len(b.mappings) - 1; idx >= 0; idx-- {
+		m := b.mappings[idx]
 		if addr >= m.start && addr <= m.end {
-			return m, true
+			currentSpan = uint32(m.end) - uint32(m.start)
+			if !found || currentSpan < bestSpan {
+				best = m
+				bestSpan = currentSpan
+				found = true
+			}
 		}
 	}
-	return mapping{}, false
-}
 
-func rangesOverlap(aStart, aEnd, bStart, bEnd uint16) bool {
-	return aStart <= bEnd && bStart <= aEnd
+	return best, found
 }
