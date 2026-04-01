@@ -55,6 +55,18 @@ type runControl struct {
 	paused atomic.Bool
 }
 
+type memoryLoader interface {
+	Load(addr uint16, data []byte) error
+}
+
+type memoryFileLoader interface {
+	LoadFile(path string, addr uint16) error
+}
+
+type memoryResetter interface {
+	Reset(ctx context.Context, bus *emulator.Bus) error
+}
+
 func (c *runControl) Paused() bool {
 	if c == nil {
 		return false
@@ -144,13 +156,13 @@ func main() {
 		}
 	}()
 
-	ram, err := memory.NewRAM("main-ram", 0x0000, 0xFFFF)
+	mmu, err := memory.NewAppleIIeMMU("main-memory")
 	if err != nil {
-		log.Fatalf("create RAM: %v", err)
+		log.Fatalf("create Apple IIe MMU: %v", err)
 	}
 
-	if err := board.Bus().MapDevice(0x0000, 0xFFFF, "main-ram", ram); err != nil {
-		log.Fatalf("map RAM: %v", err)
+	if err := board.Bus().MapDevice(0x0000, 0xFFFF, "main-memory", mmu); err != nil {
+		log.Fatalf("map Apple IIe MMU: %v", err)
 	}
 
 	processor := cpu.NewCPU6502("cpu-main")
@@ -183,21 +195,19 @@ func main() {
 		Keyboard: keyboardDevice,
 	}, video.AppleIIeOptions{
 		CharacterROM: characterROM,
+		BankedMemory: mmu,
 	})
 	if err != nil {
 		log.Fatalf("create video: %v", err)
 	}
 	log.Printf("loaded Apple IIe character ROM %s (%s)", characterROMPath, video.DescribeAppleIIeCharacterROM(characterROM))
 
-	if err := board.Bus().MapDevice(0xC000, 0xC000, "keyboard-data", keyboardDevice); err != nil {
-		log.Fatalf("map keyboard data: %v", err)
-	}
-	if err := board.Bus().MapDevice(0xC010, 0xC010, "keyboard-strobe", keyboardDevice); err != nil {
-		log.Fatalf("map keyboard strobe: %v", err)
+	if err := mapAppleIIeSoftSwitches(board.Bus(), mmu, videoDevice, soundDevice, keyboardDevice); err != nil {
+		log.Fatalf("map Apple IIe soft-switches: %v", err)
 	}
 
 	components := []emulator.ClockedComponent{
-		ram,
+		mmu,
 		processor,
 		videoDevice,
 		soundDevice,
@@ -231,14 +241,14 @@ func main() {
 		log.Printf("interactive controls: press space to pause, then use the pause menu for resume, memory dump, or quit; Ctrl+C interrupts")
 	}
 
-	if err := resetForBoot(ctx, board.Bus(), ram, videoDevice, soundDevice, keyboardDevice); err != nil {
+	if err := resetForBoot(ctx, board.Bus(), mmu, videoDevice, soundDevice, keyboardDevice); err != nil {
 		log.Fatalf("prepare machine state: %v", err)
 	}
 
-	writeStartupTextToRAM(ram, startupScreenLines(*videoBackend, *romConfigPath, characterROMPath))
+	writeStartupTextToRAM(mmu, startupScreenLines(*videoBackend, *romConfigPath, characterROMPath))
 
 	if *romConfigPath != "" {
-		loadedROMs, err := loadROMsFromConfig(ram, *romConfigPath)
+		loadedROMs, err := loadROMsFromConfig(mmu, *romConfigPath)
 		if err != nil {
 			log.Fatalf("load ROM config: %v", err)
 		}
@@ -258,7 +268,7 @@ func main() {
 	log.Printf("emulation stopped after %d cycles", board.Cycle())
 }
 
-func loadROMsFromConfig(ram *memory.RAM, configPath string) ([]string, error) {
+func loadROMsFromConfig(memoryDevice memoryFileLoader, configPath string) ([]string, error) {
 	resolvedConfigPath, err := filepath.Abs(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve ROM config path: %w", err)
@@ -273,7 +283,7 @@ func loadROMsFromConfig(ram *memory.RAM, configPath string) ([]string, error) {
 	loadedROMs := make([]string, 0, len(set.ROMs))
 	for idx, rom := range set.ROMs {
 		resolvedROMPath := rom.ResolvePath(baseDir)
-		if err := ram.LoadFile(resolvedROMPath, rom.Start.Uint16()); err != nil {
+		if err := memoryDevice.LoadFile(resolvedROMPath, rom.Start.Uint16()); err != nil {
 			return nil, fmt.Errorf("load ROM %d (%s): %w", idx, resolvedROMPath, err)
 		}
 
@@ -288,9 +298,9 @@ func loadROMsFromConfig(ram *memory.RAM, configPath string) ([]string, error) {
 	return loadedROMs, nil
 }
 
-func resetForBoot(ctx context.Context, bus *emulator.Bus, ram *memory.RAM, videoDevice *video.AppleIIeCRTC, soundDevice *sound.NullSound, keyboardDevice *peripheral.Keyboard) error {
-	if err := ram.Reset(ctx, bus); err != nil {
-		return fmt.Errorf("reset RAM: %w", err)
+func resetForBoot(ctx context.Context, bus *emulator.Bus, memoryDevice memoryResetter, videoDevice *video.AppleIIeCRTC, soundDevice *sound.NullSound, keyboardDevice *peripheral.Keyboard) error {
+	if err := memoryDevice.Reset(ctx, bus); err != nil {
+		return fmt.Errorf("reset memory: %w", err)
 	}
 	if err := videoDevice.Reset(ctx, bus); err != nil {
 		return fmt.Errorf("reset video: %w", err)
@@ -301,6 +311,36 @@ func resetForBoot(ctx context.Context, bus *emulator.Bus, ram *memory.RAM, video
 	if err := keyboardDevice.Reset(ctx, bus); err != nil {
 		return fmt.Errorf("reset keyboard: %w", err)
 	}
+	return nil
+}
+
+func mapAppleIIeSoftSwitches(bus *emulator.Bus, memoryDevice emulator.AddressableDevice, videoDevice *video.AppleIIeCRTC, soundDevice *sound.NullSound, keyboardDevice *peripheral.Keyboard) error {
+	if bus == nil {
+		return fmt.Errorf("bus is nil")
+	}
+
+	softSwitches := peripheral.NewAppleIIeSoftSwitches(keyboardDevice, videoDevice, soundDevice, memoryDevice)
+
+	mappings := []struct {
+		start  uint16
+		end    uint16
+		name   string
+		device emulator.AddressableDevice
+	}{
+		{start: 0xC000, end: 0xC01F, name: "apple2e-softswitches-low", device: softSwitches},
+		{start: 0xC030, end: 0xC03F, name: "apple2e-softswitches-speaker", device: softSwitches},
+		{start: 0xC050, end: 0xC05F, name: "apple2e-softswitches-video", device: softSwitches},
+	}
+
+	for _, mapping := range mappings {
+		if mapping.device == nil {
+			continue
+		}
+		if err := bus.MapDevice(mapping.start, mapping.end, mapping.name, mapping.device); err != nil {
+			return fmt.Errorf("map %s: %w", mapping.name, err)
+		}
+	}
+
 	return nil
 }
 
@@ -405,8 +445,8 @@ func startupScreenLines(backend string, romConfigPath string, characterROMPath s
 	}
 }
 
-func writeStartupTextToRAM(ram *memory.RAM, lines []string) {
-	if ram == nil {
+func writeStartupTextToRAM(memoryDevice memoryLoader, lines []string) {
+	if memoryDevice == nil {
 		return
 	}
 
@@ -422,18 +462,18 @@ func writeStartupTextToRAM(ram *memory.RAM, lines []string) {
 		writeStartupTextLine(page, row, line)
 	}
 
-	if err := ram.Load(appleIIeTextPage1Address, page); err != nil {
+	if err := memoryDevice.Load(appleIIeTextPage1Address, page); err != nil {
 		log.Printf("startup text page load warning: %v", err)
 	}
 }
 
-func writeResetVector(ram *memory.RAM, addr uint16) error {
-	if ram == nil {
-		return fmt.Errorf("ram is nil")
+func writeResetVector(memoryDevice memoryLoader, addr uint16) error {
+	if memoryDevice == nil {
+		return fmt.Errorf("memory device is nil")
 	}
 
 	vector := []byte{byte(addr & 0x00FF), byte(addr >> 8)}
-	return ram.Load(resetVectorAddress, vector)
+	return memoryDevice.Load(resetVectorAddress, vector)
 }
 
 func writeStartupTextLine(page []byte, row int, text string) {

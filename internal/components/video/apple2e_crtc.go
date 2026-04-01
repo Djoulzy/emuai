@@ -14,17 +14,28 @@ const (
 	appleIIeCharROMSize   = 256 * 8
 	appleIIeCharROMSizeEx = 512 * 8
 
-	appleIIeSwitch80ColOff uint16 = 0xC00C
-	appleIIeSwitch80ColOn  uint16 = 0xC00D
-	appleIIeSwitchGraphics uint16 = 0xC050
-	appleIIeSwitchText     uint16 = 0xC051
-	appleIIeSwitchFull     uint16 = 0xC052
-	appleIIeSwitchMixed    uint16 = 0xC053
-	appleIIeSwitchPage1    uint16 = 0xC054
-	appleIIeSwitchPage2    uint16 = 0xC055
-	appleIIeSwitchLoRes    uint16 = 0xC056
-	appleIIeSwitchHiRes    uint16 = 0xC057
-	appleIIeSwitchVBlank   uint16 = 0xC019
+	appleIIeSwitch80StoreOff     uint16 = 0xC000
+	appleIIeSwitch80StoreOn      uint16 = 0xC001
+	appleIIeSwitch80ColOff       uint16 = 0xC00C
+	appleIIeSwitch80ColOn        uint16 = 0xC00D
+	appleIIeSwitchAltCharsetOff  uint16 = 0xC00E
+	appleIIeSwitchAltCharsetOn   uint16 = 0xC00F
+	appleIIeSwitchRead80Store    uint16 = 0xC018
+	appleIIeSwitchGraphics       uint16 = 0xC050
+	appleIIeSwitchText           uint16 = 0xC051
+	appleIIeSwitchFull           uint16 = 0xC052
+	appleIIeSwitchMixed          uint16 = 0xC053
+	appleIIeSwitchPage1          uint16 = 0xC054
+	appleIIeSwitchPage2          uint16 = 0xC055
+	appleIIeSwitchLoRes          uint16 = 0xC056
+	appleIIeSwitchHiRes          uint16 = 0xC057
+	appleIIeSwitchVBlank         uint16 = 0xC019
+	appleIIeSwitchReadText       uint16 = 0xC01A
+	appleIIeSwitchReadMixed      uint16 = 0xC01B
+	appleIIeSwitchReadPage2      uint16 = 0xC01C
+	appleIIeSwitchReadHiRes      uint16 = 0xC01D
+	appleIIeSwitchReadAltCharset uint16 = 0xC01E
+	appleIIeSwitchRead80Col      uint16 = 0xC01F
 )
 
 const (
@@ -64,6 +75,8 @@ type AppleIIeDisplayMode struct {
 	HiRes       bool
 	Mixed       bool
 	Page2       bool
+	Store80     bool
+	AltCharset  bool
 	Columns80   bool
 	DoubleWidth bool
 }
@@ -75,10 +88,16 @@ type AppleIIeMemory struct {
 	AuxHiRes  [2][]byte
 }
 
+type AppleIIeBankedMemory interface {
+	ReadMain(addr uint16) (byte, error)
+	ReadAux(addr uint16) (byte, error)
+}
+
 type AppleIIeOptions struct {
 	ColorDisplay bool
 	CharacterROM []byte
 	Memory       AppleIIeMemory
+	BankedMemory AppleIIeBankedMemory
 }
 
 type AppleIIeCRTC struct {
@@ -91,6 +110,7 @@ type AppleIIeCRTC struct {
 	mode         AppleIIeDisplayMode
 	renderMode   appleIIeRenderMode
 	memory       AppleIIeMemory
+	bankedMemory AppleIIeBankedMemory
 	characterROM []byte
 	charROMKind  appleIIeCharacterROMKind
 
@@ -217,6 +237,7 @@ func newAppleIIeCRTC(name string, cfg Config, options AppleIIeOptions, renderer 
 			cyclesPerFrame: cyclesPerFrame,
 		},
 		memory:       normalizedAppleIIeMemory(options.Memory),
+		bankedMemory: options.BankedMemory,
 		characterROM: normalizedCharacterROM(options.CharacterROM),
 		charROMKind:  detectAppleIIeCharacterROMKind(options.CharacterROM),
 		textColor:    appleIIeMonochromeColor,
@@ -281,9 +302,14 @@ func (c *AppleIIeCRTC) Tick(_ context.Context, tick emulator.Tick, bus *emulator
 
 func (c *AppleIIeCRTC) Read(addr uint16) (byte, error) {
 	switch addr {
+	case appleIIeSwitchRead80Store:
+		if c.mode.Store80 {
+			return 0x80, nil
+		}
+		return 0x00, nil
 	case appleIIeSwitchVBlank:
 		return c.VBL, nil
-	case appleIIeSwitchText:
+	case appleIIeSwitchText, appleIIeSwitchReadText:
 		if c.mode.Text {
 			return 0x80, nil
 		}
@@ -293,7 +319,7 @@ func (c *AppleIIeCRTC) Read(addr uint16) (byte, error) {
 			return 0x80, nil
 		}
 		return 0x00, nil
-	case appleIIeSwitchHiRes:
+	case appleIIeSwitchHiRes, appleIIeSwitchReadHiRes:
 		if c.mode.HiRes {
 			return 0x80, nil
 		}
@@ -303,7 +329,7 @@ func (c *AppleIIeCRTC) Read(addr uint16) (byte, error) {
 			return 0x80, nil
 		}
 		return 0x00, nil
-	case appleIIeSwitchPage2:
+	case appleIIeSwitchPage2, appleIIeSwitchReadPage2:
 		if c.mode.Page2 {
 			return 0x80, nil
 		}
@@ -313,8 +339,18 @@ func (c *AppleIIeCRTC) Read(addr uint16) (byte, error) {
 			return 0x80, nil
 		}
 		return 0x00, nil
-	case appleIIeSwitchMixed:
+	case appleIIeSwitchMixed, appleIIeSwitchReadMixed:
 		if c.mode.Mixed {
+			return 0x80, nil
+		}
+		return 0x00, nil
+	case appleIIeSwitchReadAltCharset:
+		if c.mode.AltCharset {
+			return 0x80, nil
+		}
+		return 0x00, nil
+	case appleIIeSwitchRead80Col:
+		if c.mode.Columns80 {
 			return 0x80, nil
 		}
 		return 0x00, nil
@@ -335,6 +371,14 @@ func (c *AppleIIeCRTC) Read(addr uint16) (byte, error) {
 
 func (c *AppleIIeCRTC) Write(addr uint16, _ byte) error {
 	switch addr {
+	case appleIIeSwitch80StoreOff:
+		c.Set80Store(false)
+	case appleIIeSwitch80StoreOn:
+		c.Set80Store(true)
+	case appleIIeSwitchAltCharsetOff:
+		c.SetAltCharset(false)
+	case appleIIeSwitchAltCharsetOn:
+		c.SetAltCharset(true)
 	case appleIIeSwitchGraphics:
 		c.SetGraphicsMode()
 	case appleIIeSwitchText:
@@ -375,6 +419,12 @@ func (c *AppleIIeCRTC) ModeString() string {
 	if c.mode.Mixed {
 		parts = append(parts, "MIXED")
 	}
+	if c.mode.Store80 {
+		parts = append(parts, "80STORE")
+	}
+	if c.mode.AltCharset {
+		parts = append(parts, "ALTCHAR")
+	}
 	if c.mode.Columns80 {
 		parts = append(parts, "80COL")
 	} else {
@@ -405,6 +455,14 @@ func (c *AppleIIeCRTC) Set40Cols() {
 	c.mode.Columns80 = false
 	c.disableDoubleWidth()
 	c.updateDisplayMode()
+}
+
+func (c *AppleIIeCRTC) Set80Store(enabled bool) {
+	c.mode.Store80 = enabled
+}
+
+func (c *AppleIIeCRTC) SetAltCharset(enabled bool) {
+	c.mode.AltCharset = enabled
 }
 
 func (c *AppleIIeCRTC) Set80Cols() {
@@ -706,12 +764,28 @@ func (c *AppleIIeCRTC) readHiResByte(row, col int, aux bool) byte {
 }
 
 func (c *AppleIIeCRTC) readActiveVideoByte(offset int, aux bool) (byte, bool) {
-	if c.bus == nil {
+	addr, ok := c.activeVideoAddress(offset, aux)
+	if !ok {
 		return 0, false
 	}
 
-	addr, ok := c.activeVideoAddress(offset, aux)
-	if !ok {
+	if c.bankedMemory != nil {
+		var (
+			value byte
+			err   error
+		)
+		if aux {
+			value, err = c.bankedMemory.ReadAux(addr)
+		} else {
+			value, err = c.bankedMemory.ReadMain(addr)
+		}
+		if err != nil {
+			return 0, false
+		}
+		return value, true
+	}
+
+	if c.bus == nil {
 		return 0, false
 	}
 
@@ -723,7 +797,7 @@ func (c *AppleIIeCRTC) readActiveVideoByte(offset int, aux bool) (byte, bool) {
 }
 
 func (c *AppleIIeCRTC) activeVideoAddress(offset int, aux bool) (uint16, bool) {
-	if offset < 0 || aux {
+	if offset < 0 {
 		return 0, false
 	}
 
@@ -791,7 +865,14 @@ func (c *AppleIIeCRTC) glyphRowBitOn(glyphRow byte, col int) bool {
 
 func (c *AppleIIeCRTC) glyphIndexForTextValue(value byte, inverse bool) int {
 	if c.charROMKind == appleIIeCharacterROMEnhanced {
-		return appleIIeEnhancedGlyphIndex(value, inverse)
+		glyphIndex := appleIIeEnhancedGlyphIndex(value, inverse)
+		if c.mode.AltCharset {
+			alternateIndex := glyphIndex + 0x100
+			if alternateIndex*8 < len(c.characterROM) {
+				return alternateIndex
+			}
+		}
+		return glyphIndex
 	}
 	return int(value & 0x7F)
 }

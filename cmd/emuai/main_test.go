@@ -12,6 +12,8 @@ import (
 
 	"github.com/Djoulzy/emuai/internal/components/cpu"
 	"github.com/Djoulzy/emuai/internal/components/memory"
+	"github.com/Djoulzy/emuai/internal/components/peripheral"
+	"github.com/Djoulzy/emuai/internal/components/sound"
 	"github.com/Djoulzy/emuai/internal/components/video"
 	"github.com/Djoulzy/emuai/internal/emulator"
 )
@@ -218,6 +220,147 @@ func TestLoadROMsFromConfig(t *testing.T) {
 		if got != want {
 			t.Fatalf("unexpected ROM byte at offset %d: got 0x%02X want 0x%02X", idx, got, want)
 		}
+	}
+}
+
+func TestMapAppleIIeSoftSwitchesRoutesVideoKeyboardAndSound(t *testing.T) {
+	bus := emulator.NewBus()
+	mmu, err := memory.NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+	if err := bus.MapDevice(0x0000, 0xFFFF, "mmu", mmu); err != nil {
+		t.Fatalf("map MMU: %v", err)
+	}
+
+	videoDevice, err := video.NewAppleIIeCRTC("video", video.Config{}, video.AppleIIeOptions{})
+	if err != nil {
+		t.Fatalf("new video device: %v", err)
+	}
+	t.Cleanup(func() { _ = videoDevice.Close() })
+
+	soundDevice := sound.NewNullSound("sound")
+	keyboardDevice := peripheral.NewKeyboard("keyboard")
+
+	if err := mapAppleIIeSoftSwitches(bus, mmu, videoDevice, soundDevice, keyboardDevice); err != nil {
+		t.Fatalf("mapAppleIIeSoftSwitches: %v", err)
+	}
+
+	if err := bus.Write(0xC050, 0); err != nil {
+		t.Fatalf("write graphics soft-switch: %v", err)
+	}
+	graphicsStatus, err := bus.Read(0xC050)
+	if err != nil {
+		t.Fatalf("read graphics soft-switch: %v", err)
+	}
+	if graphicsStatus != 0x80 {
+		t.Fatalf("unexpected graphics status: got 0x%02X want 0x80", graphicsStatus)
+	}
+
+	if err := bus.Write(0xC00D, 0); err != nil {
+		t.Fatalf("write 80-column soft-switch: %v", err)
+	}
+	columnsStatus, err := bus.Read(0xC00D)
+	if err != nil {
+		t.Fatalf("read 80-column soft-switch: %v", err)
+	}
+	if columnsStatus != 0x80 {
+		t.Fatalf("unexpected 80-column status: got 0x%02X want 0x80", columnsStatus)
+	}
+
+	if err := bus.Write(0xC000, 0); err != nil {
+		t.Fatalf("write 80STORE soft-switch: %v", err)
+	}
+	store80Status, err := bus.Read(0xC018)
+	if err != nil {
+		t.Fatalf("read 80STORE status: %v", err)
+	}
+	if store80Status != 0x00 {
+		t.Fatalf("unexpected 80STORE status after off write: got 0x%02X want 0x00", store80Status)
+	}
+	if err := bus.Write(0xC001, 0); err != nil {
+		t.Fatalf("write 80STORE-on soft-switch: %v", err)
+	}
+	store80Status, err = bus.Read(0xC018)
+	if err != nil {
+		t.Fatalf("read 80STORE-on status: %v", err)
+	}
+	if store80Status != 0x80 {
+		t.Fatalf("unexpected 80STORE status after on write: got 0x%02X want 0x80", store80Status)
+	}
+
+	if err := bus.Write(0xC00F, 0); err != nil {
+		t.Fatalf("write ALTCHARSET soft-switch: %v", err)
+	}
+	altCharsetStatus, err := bus.Read(0xC01E)
+	if err != nil {
+		t.Fatalf("read ALTCHARSET status: %v", err)
+	}
+	if altCharsetStatus != 0x80 {
+		t.Fatalf("unexpected ALTCHARSET status: got 0x%02X want 0x80", altCharsetStatus)
+	}
+
+	if err := bus.Write(0xC005, 0); err != nil {
+		t.Fatalf("write RAMWRT-on soft-switch: %v", err)
+	}
+	if err := bus.Write(0x0200, 0x42); err != nil {
+		t.Fatalf("write aux memory byte: %v", err)
+	}
+	if err := bus.Write(0xC003, 0); err != nil {
+		t.Fatalf("write RAMRD-on soft-switch: %v", err)
+	}
+	auxValue, err := bus.Read(0x0200)
+	if err != nil {
+		t.Fatalf("read aux-backed memory byte: %v", err)
+	}
+	if auxValue != 0x42 {
+		t.Fatalf("unexpected aux-backed memory byte: got 0x%02X want 0x42", auxValue)
+	}
+	if got, err := bus.Read(0xC013); err != nil || got != 0x80 {
+		t.Fatalf("expected RAMRD status=0x80, got 0x%02X err=%v", got, err)
+	}
+	if got, err := bus.Read(0xC014); err != nil || got != 0x80 {
+		t.Fatalf("expected RAMWRT status=0x80, got 0x%02X err=%v", got, err)
+	}
+
+	if err := bus.Write(0xC009, 0); err != nil {
+		t.Fatalf("write ALTZP-on soft-switch: %v", err)
+	}
+	if err := bus.Write(0x0001, 0x99); err != nil {
+		t.Fatalf("write aux zero-page byte: %v", err)
+	}
+	zeroPageAux, err := bus.Read(0x0001)
+	if err != nil {
+		t.Fatalf("read aux zero-page byte: %v", err)
+	}
+	if zeroPageAux != 0x99 {
+		t.Fatalf("unexpected aux zero-page byte: got 0x%02X want 0x99", zeroPageAux)
+	}
+	if got, err := bus.Read(0xC016); err != nil || got != 0x80 {
+		t.Fatalf("expected ALTZP status=0x80, got 0x%02X err=%v", got, err)
+	}
+
+	if err := bus.Write(0xC007, 0); err != nil {
+		t.Fatalf("write INTCXROM-on soft-switch: %v", err)
+	}
+	if got, err := bus.Read(0xC015); err != nil || got != 0x80 {
+		t.Fatalf("expected INTCXROM status=0x80, got 0x%02X err=%v", got, err)
+	}
+
+	keyboardDevice.HandleKeyEvent(emulator.KeyEvent{Rune: 'a', Action: emulator.KeyActionPress})
+	keyData, err := bus.Read(0xC000)
+	if err != nil {
+		t.Fatalf("read keyboard data: %v", err)
+	}
+	if keyData != 0xC1 {
+		t.Fatalf("unexpected keyboard data: got 0x%02X want 0xC1", keyData)
+	}
+
+	if _, err := bus.Read(0xC030); err != nil {
+		t.Fatalf("read speaker soft-switch: %v", err)
+	}
+	if soundDevice.ToggleCount() != 1 {
+		t.Fatalf("unexpected speaker toggle count: got %d want 1", soundDevice.ToggleCount())
 	}
 }
 
