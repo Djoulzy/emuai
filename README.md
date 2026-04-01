@@ -38,10 +38,11 @@ Modular 8-bit machine emulator scaffold in Go.
 ## Video Backends
 
 - Use `-video-backend null` for the current no-op renderer.
-- Use `-video-backend vulkan` with `-tags vulkan` to open a basic GLFW window backed by a Vulkan instance and surface.
+- Use `-video-backend vulkan` with a binary built using `make build-vulkan` to open a basic GLFW window backed by a Vulkan instance and surface.
 - If Vulkan runtime initialization fails on the host, startup fails with the underlying Vulkan error.
 - The current Vulkan backend stops at window, instance, and surface bring-up; the swapchain upload path and CRT shader pipeline are still pending.
-- Example: `go run -tags vulkan ./cmd/emuai -video-backend vulkan`.
+- On macOS, `make build-vulkan` auto-detects MoltenVK in `VULKAN_SDK`, `~/VulkanSDK/latest/macOS/lib`, `/usr/local/lib`, and `/opt/homebrew/lib`, then injects the required runtime search paths into the binary.
+- Example: `make build-vulkan && ./bin/emuai -video-backend vulkan`.
 - Tune the base framebuffer with `-video-width`, `-video-height`, and `-video-refresh-hz`.
 - The video package now contains a CRT-oriented configuration model, a framebuffer snapshot pipeline, and a renderer interface ready to host a Vulkan pass chain for phosphor persistence, scanlines, mask simulation, and curvature.
 
