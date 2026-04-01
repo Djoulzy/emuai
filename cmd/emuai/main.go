@@ -113,7 +113,6 @@ func (f *uint16Flag) Set(raw string) error {
 
 func main() {
 	trace := flag.Bool("trace", false, "enable CPU instruction trace output")
-	binaryPath := flag.String("bin", "", "path to a .bin file to load into RAM before execution")
 	romConfigPath := flag.String("rom-config", "", "path to a YAML file describing ROM images to load into memory")
 	timeout := flag.Duration("timeout", 0, "maximum wall-clock run duration; 0 disables timeout")
 	maxCycles := flag.Uint64("max-cycles", 0, "maximum number of motherboard cycles to execute; 0 disables the limit")
@@ -123,15 +122,13 @@ func main() {
 	videoWidth := flag.Int("video-width", 320, "video framebuffer width in pixels")
 	videoHeight := flag.Int("video-height", 240, "video framebuffer height in pixels")
 	videoRefreshHz := flag.Int("video-refresh-hz", 60, "video refresh rate in Hz")
-	loadAddr := &uint16Flag{}
 	flag.Var(stopPC, "stop-pc", "stop execution before the instruction at this program counter executes")
-	flag.Var(loadAddr, "load-addr", "RAM address where the binary is loaded")
 	flag.Parse()
 
-	if *binaryPath == "" && *romConfigPath == "" {
+	if *romConfigPath == "" {
 		defaultROMConfigPath, err := resolveRepositoryPath(filepath.Join("ROMs", defaultROMConfigName))
 		if err != nil {
-			log.Fatalf("no program source provided and default ROM config unavailable: %v", err)
+			log.Fatalf("default ROM config unavailable: %v", err)
 		}
 		*romConfigPath = defaultROMConfigPath
 		log.Printf("using default ROM config %s", defaultROMConfigPath)
@@ -168,7 +165,7 @@ func main() {
 	soundDevice := sound.NewNullSound("sound-main")
 	keyboardDevice := peripheral.NewKeyboard("kbd-main")
 
-	characterROM, characterROMPath, err := loadAppleIIeCharacterROM()
+	characterROM, characterROMPath, err := loadAppleIIeCharacterROM(*romConfigPath)
 	if err != nil {
 		log.Fatalf("load Apple IIe character ROM: %v", err)
 	}
@@ -238,7 +235,7 @@ func main() {
 		log.Fatalf("prepare machine state: %v", err)
 	}
 
-	writeStartupTextToRAM(ram, startupScreenLines(*videoBackend, *binaryPath, *romConfigPath, loadAddr.value))
+	writeStartupTextToRAM(ram, startupScreenLines(*videoBackend, *romConfigPath, characterROMPath))
 
 	if *romConfigPath != "" {
 		loadedROMs, err := loadROMsFromConfig(ram, *romConfigPath)
@@ -248,17 +245,6 @@ func main() {
 		for _, loadedROM := range loadedROMs {
 			log.Print(loadedROM)
 		}
-	}
-
-	if *binaryPath != "" {
-		resolvedPath, err := filepath.Abs(*binaryPath)
-		if err != nil {
-			log.Fatalf("resolve binary path: %v", err)
-		}
-		if err := ram.LoadFile(resolvedPath, loadAddr.value); err != nil {
-			log.Fatalf("load binary: %v", err)
-		}
-		log.Printf("loaded binary %s at 0x%04X", resolvedPath, loadAddr.value)
 	}
 
 	if err := processor.Reset(ctx, board.Bus()); err != nil {
@@ -318,8 +304,8 @@ func resetForBoot(ctx context.Context, bus *emulator.Bus, ram *memory.RAM, video
 	return nil
 }
 
-func loadAppleIIeCharacterROM() ([]byte, string, error) {
-	resolvedPath, err := resolveRepositoryPath(filepath.Join("ROMs", appleIIeCharacterROMName))
+func loadAppleIIeCharacterROM(romConfigPath string) ([]byte, string, error) {
+	resolvedPath, err := resolveAppleIIeCharacterROMPath(romConfigPath)
 	if err != nil {
 		return nil, "", err
 	}
@@ -334,6 +320,42 @@ func loadAppleIIeCharacterROM() ([]byte, string, error) {
 	}
 
 	return data, resolvedPath, nil
+}
+
+func resolveAppleIIeCharacterROMPath(romConfigPath string) (string, error) {
+	if strings.TrimSpace(romConfigPath) != "" {
+		resolvedConfigPath, err := filepath.Abs(romConfigPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve ROM config path for character ROM: %w", err)
+		}
+
+		set, err := romconfig.LoadROMSet(resolvedConfigPath)
+		if err != nil {
+			return "", fmt.Errorf("load ROM config for character ROM: %w", err)
+		}
+
+		if chargenPath := set.ResolveChargenPath(filepath.Dir(resolvedConfigPath)); chargenPath != "" {
+			return chargenPath, nil
+		}
+	}
+
+	return resolveDefaultAppleIIeCharacterROMPath()
+}
+
+func resolveDefaultAppleIIeCharacterROMPath() (string, error) {
+	candidates := []string{
+		filepath.Join("ROMs", "Apple2", appleIIeCharacterROMName),
+		filepath.Join("ROMs", appleIIeCharacterROMName),
+	}
+
+	for _, candidate := range candidates {
+		resolvedPath, err := resolveRepositoryPath(candidate)
+		if err == nil {
+			return resolvedPath, nil
+		}
+	}
+
+	return "", fmt.Errorf("could not locate default Apple IIe character ROM in %s", strings.Join(candidates, ", "))
 }
 
 func resolveRepositoryPath(relativePath string) (string, error) {
@@ -357,22 +379,23 @@ func resolveRepositoryPath(relativePath string) (string, error) {
 	return "", fmt.Errorf("could not locate %s from %s", relativePath, workingDir)
 }
 
-func startupScreenLines(backend string, binaryPath string, romConfigPath string, loadAddr uint16) []string {
-	source := "BUILT-IN DEMO"
+func startupScreenLines(backend string, romConfigPath string, characterROMPath string) []string {
+	source := "DEFAULT ROM SET"
 	if romConfigPath != "" {
 		source = strings.ToUpper(filepath.Base(romConfigPath))
 	}
-	if binaryPath != "" {
-		source = strings.ToUpper(filepath.Base(binaryPath))
+
+	characterROMName := strings.ToUpper(filepath.Base(characterROMPath))
+	if characterROMName == "" {
+		characterROMName = strings.ToUpper(appleIIeCharacterROMName)
 	}
 
 	return []string{
 		"EMUAI APPLE IIE ROM BOOT",
 		"",
 		fmt.Sprintf("VIDEO BACKEND : %s", strings.ToUpper(backend)),
-		fmt.Sprintf("CHAR ROM      : %s", strings.ToUpper(appleIIeCharacterROMName)),
-		fmt.Sprintf("SOURCE        : %s", source),
-		fmt.Sprintf("LOAD ADDRESS  : $%04X", loadAddr),
+		fmt.Sprintf("CHAR ROM      : %s", characterROMName),
+		fmt.Sprintf("ROM CONFIG    : %s", source),
 		"CPU RESET AFTER ROM LOAD",
 		"",
 		"BOOT SCREEN READY.",

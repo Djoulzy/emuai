@@ -221,6 +221,32 @@ func TestLoadROMsFromConfig(t *testing.T) {
 	}
 }
 
+func TestResolveAppleIIeCharacterROMPathUsesROMConfigChargen(t *testing.T) {
+	tempDir := t.TempDir()
+	romPath := filepath.Join(tempDir, "monitor.bin")
+	chargenPath := filepath.Join(tempDir, "custom-chargen.bin")
+	if err := os.WriteFile(romPath, []byte{0xEA, 0x00}, 0o644); err != nil {
+		t.Fatalf("write ROM: %v", err)
+	}
+	if err := os.WriteFile(chargenPath, make([]byte, 256*8), 0o644); err != nil {
+		t.Fatalf("write chargen: %v", err)
+	}
+
+	configPath := filepath.Join(tempDir, "roms.yaml")
+	configData := []byte("chargen:\n  path: custom-chargen.bin\nroms:\n  - path: monitor.bin\n    start: 0xD000\n")
+	if err := os.WriteFile(configPath, configData, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	got, err := resolveAppleIIeCharacterROMPath(configPath)
+	if err != nil {
+		t.Fatalf("resolveAppleIIeCharacterROMPath returned error: %v", err)
+	}
+	if got != chargenPath {
+		t.Fatalf("unexpected config chargen path: got %q want %q", got, chargenPath)
+	}
+}
+
 func TestParseHexAddress(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -359,12 +385,18 @@ func TestWriteResetVectorStoresLittleEndianAddress(t *testing.T) {
 }
 
 func TestStartupScreenLinesDefaultsToROMBootMessaging(t *testing.T) {
-	lines := startupScreenLines(string(video.BackendNull), "", filepath.Join("ROMs", defaultROMConfigName), 0x0200)
+	lines := startupScreenLines(string(video.BackendNull), filepath.Join("ROMs", defaultROMConfigName), filepath.Join("ROMs", "custom-chargen.bin"))
 
 	if lines[0] != "EMUAI APPLE IIE ROM BOOT" {
 		t.Fatalf("unexpected boot banner: %q", lines[0])
 	}
-	if lines[6] != "CPU RESET AFTER ROM LOAD" {
-		t.Fatalf("unexpected reset line: %q", lines[6])
+	if lines[3] != "CHAR ROM      : CUSTOM-CHARGEN.BIN" {
+		t.Fatalf("unexpected chargen line: %q", lines[3])
+	}
+	if lines[4] != "ROM CONFIG    : APPLE2-ROMS.YAML" {
+		t.Fatalf("unexpected ROM config line: %q", lines[4])
+	}
+	if lines[5] != "CPU RESET AFTER ROM LOAD" {
+		t.Fatalf("unexpected reset line: %q", lines[5])
 	}
 }

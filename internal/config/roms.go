@@ -13,7 +13,12 @@ import (
 type Address uint16
 
 type ROMSet struct {
-	ROMs []ROM `yaml:"roms"`
+	Chargen *Asset `yaml:"chargen,omitempty"`
+	ROMs    []ROM  `yaml:"roms"`
+}
+
+type Asset struct {
+	Path string `yaml:"path"`
 }
 
 type ROM struct {
@@ -50,30 +55,56 @@ func (s *ROMSet) Validate(baseDir string) error {
 		return fmt.Errorf("rom config: at least one ROM entry is required")
 	}
 
-	for idx, rom := range s.ROMs {
-		if strings.TrimSpace(rom.Path) == "" {
-			return fmt.Errorf("rom config: rom[%d] path is required", idx)
+	if s.Chargen != nil {
+		if err := validateAssetPath("chargen", s.Chargen.Path, baseDir); err != nil {
+			return err
 		}
+	}
 
-		resolved := rom.ResolvePath(baseDir)
-		info, err := os.Stat(resolved)
-		if err != nil {
-			return fmt.Errorf("rom config: rom[%d] path %q: %w", idx, resolved, err)
-		}
-		if info.IsDir() {
-			return fmt.Errorf("rom config: rom[%d] path %q is a directory", idx, resolved)
+	for idx, rom := range s.ROMs {
+		if err := validateAssetPath(fmt.Sprintf("rom[%d]", idx), rom.Path, baseDir); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-func (r ROM) ResolvePath(baseDir string) string {
-	if filepath.IsAbs(r.Path) {
-		return r.Path
+func (s *ROMSet) ResolveChargenPath(baseDir string) string {
+	if s == nil || s.Chargen == nil {
+		return ""
 	}
 
-	return filepath.Clean(filepath.Join(baseDir, r.Path))
+	return resolveAssetPath(baseDir, s.Chargen.Path)
+}
+
+func (r ROM) ResolvePath(baseDir string) string {
+	return resolveAssetPath(baseDir, r.Path)
+}
+
+func resolveAssetPath(baseDir string, path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+
+	return filepath.Clean(filepath.Join(baseDir, path))
+}
+
+func validateAssetPath(label string, path string, baseDir string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("rom config: %s path is required", label)
+	}
+
+	resolved := resolveAssetPath(baseDir, path)
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("rom config: %s path %q: %w", label, resolved, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("rom config: %s path %q is a directory", label, resolved)
+	}
+
+	return nil
 }
 
 func (a *Address) UnmarshalYAML(node *yaml.Node) error {

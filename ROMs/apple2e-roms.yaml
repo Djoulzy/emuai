@@ -1,0 +1,13 @@
+chargen:
+  path: Apple2e/Video_US.bin
+
+roms:
+  - name: apple2e-system-bank-c
+    path: Apple2e/C.bin
+    start: 0xC000
+  - name: apple2e-system-bank-d
+    path: Apple2e/D.bin
+    start: 0xD000
+  - name: apple2e-system-bank-ef
+    path: Apple2e/EF.bin
+    start: 0xE000
