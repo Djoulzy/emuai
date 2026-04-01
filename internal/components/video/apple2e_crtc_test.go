@@ -106,6 +106,116 @@ func TestAppleIIeCRTCTextRenderingUsesCharacterROM(t *testing.T) {
 	}
 }
 
+func TestAppleIIeCRTCDetectsEnhancedCharacterROM(t *testing.T) {
+	charROM := make([]byte, appleIIeCharROMSizeEx)
+	crtc, err := NewAppleIIeCRTC("crtc", Config{}, AppleIIeOptions{CharacterROM: charROM})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	if crtc.charROMKind != appleIIeCharacterROMEnhanced {
+		t.Fatalf("unexpected character ROM kind: got %d want %d", crtc.charROMKind, appleIIeCharacterROMEnhanced)
+	}
+}
+
+func TestDescribeAppleIIeCharacterROM(t *testing.T) {
+	if got := DescribeAppleIIeCharacterROM(make([]byte, appleIIeCharROMSize)); got != "Apple II compatible chargen (2 KB)" {
+		t.Fatalf("unexpected classic chargen description: %q", got)
+	}
+	if got := DescribeAppleIIeCharacterROM(make([]byte, appleIIeCharROMSizeEx)); got != "Apple IIe enhanced chargen (4 KB)" {
+		t.Fatalf("unexpected enhanced chargen description: %q", got)
+	}
+}
+
+func TestAppleIIeCRTCEnhancedCharacterROMMapsUppercaseAndLowercase(t *testing.T) {
+	charROM := make([]byte, appleIIeCharROMSizeEx)
+	for row := 0; row < 8; row++ {
+		charROM[(0x01*8)+row] = 0x01
+		charROM[(0x61*8)+row] = 0x20
+		charROM[(0x41*8)+row] = 0x7E
+		charROM[(0xE1*8)+row] = 0x7C
+	}
+
+	memory := AppleIIeMemory{}
+	memory.MainText[0] = make([]byte, appleIIeTextPageSize)
+	memory.MainText[0][appleIIeTextOffset(0, 0)] = 0xC1
+	memory.MainText[0][appleIIeTextOffset(0, 1)] = 0xE1
+
+	crtc, err := NewAppleIIeCRTC("crtc", Config{CRT: CRTConfig{Width: 280, Height: 192, RefreshHz: 60}}, AppleIIeOptions{CharacterROM: charROM, Memory: memory, ColorDisplay: true})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	crtc.redrawFrame()
+	snapshot := crtc.Framebuffer().Snapshot(1)
+	cellWidth := crtc.Config().CRT.Width / 40
+
+	if snapshot.Pixels[0] == appleIIeBlackColor {
+		t.Fatal("expected uppercase glyph to use enhanced Apple IIe normal bank")
+	}
+	if snapshot.Pixels[cellWidth+5] == appleIIeBlackColor {
+		t.Fatal("expected lowercase glyph to use enhanced Apple IIe lowercase bank")
+	}
+	if snapshot.Pixels[cellWidth] != appleIIeBlackColor {
+		t.Fatal("expected lowercase glyph left edge to remain dark with selected bank")
+	}
+}
+
+func TestAppleIIeCRTCEnhancedCharacterROMUsesInverseBanks(t *testing.T) {
+	charROM := make([]byte, appleIIeCharROMSizeEx)
+	for row := 0; row < 8; row++ {
+		charROM[(0x01*8)+row] = 0x00
+		charROM[(0x41*8)+row] = 0x01
+	}
+
+	memory := AppleIIeMemory{}
+	memory.MainText[0] = make([]byte, appleIIeTextPageSize)
+	memory.MainText[0][appleIIeTextOffset(0, 0)] = 0x41
+
+	crtc, err := NewAppleIIeCRTC("crtc", Config{CRT: CRTConfig{Width: 280, Height: 192, RefreshHz: 60}}, AppleIIeOptions{CharacterROM: charROM, Memory: memory, ColorDisplay: true})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	crtc.blinkOn = true
+	crtc.redrawFrame()
+	snapshot := crtc.Framebuffer().Snapshot(1)
+
+	if snapshot.Pixels[0] == appleIIeBlackColor {
+		t.Fatal("expected flashing uppercase glyph to use enhanced inverse bank when flash is active")
+	}
+}
+
+func TestAppleIIeCRTCEnhancedCharacterROMDoesNotMirrorGlyphs(t *testing.T) {
+	charROM := make([]byte, appleIIeCharROMSizeEx)
+	for row := 0; row < 8; row++ {
+		charROM[(0x61*8)+row] = 0x20
+	}
+
+	memory := AppleIIeMemory{}
+	memory.MainText[0] = make([]byte, appleIIeTextPageSize)
+	memory.MainText[0][appleIIeTextOffset(0, 0)] = 0xE1
+
+	crtc, err := NewAppleIIeCRTC("crtc", Config{CRT: CRTConfig{Width: 280, Height: 192, RefreshHz: 60}}, AppleIIeOptions{CharacterROM: charROM, Memory: memory, ColorDisplay: true})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	crtc.redrawFrame()
+	snapshot := crtc.Framebuffer().Snapshot(1)
+
+	if snapshot.Pixels[5] == appleIIeBlackColor {
+		t.Fatal("expected enhanced Apple IIe glyph bit order to light the right-facing pixel")
+	}
+	if snapshot.Pixels[1] != appleIIeBlackColor {
+		t.Fatal("expected enhanced Apple IIe glyph bit order to keep the mirrored pixel dark")
+	}
+}
+
 func TestAppleIIeCRTCTickAdvancesVBlankAndPresents(t *testing.T) {
 	renderer := &spyRenderer{}
 	crtc, err := newAppleIIeCRTC("crtc", Config{ClockHz: 120, CRT: CRTConfig{Width: 560, Height: 384, RefreshHz: 60}}, AppleIIeOptions{}, renderer)

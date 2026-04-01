@@ -187,7 +187,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("create video: %v", err)
 	}
-	log.Printf("loaded Apple IIe character ROM %s", characterROMPath)
+	log.Printf("loaded Apple IIe character ROM %s (%s)", characterROMPath, video.DescribeAppleIIeCharacterROM(characterROM))
 
 	if err := board.Bus().MapDevice(0xC000, 0xC000, "keyboard-data", keyboardDevice); err != nil {
 		log.Fatalf("map keyboard data: %v", err)

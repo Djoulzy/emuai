@@ -12,6 +12,7 @@ const (
 	appleIIeTextPageSize  = 0x0400
 	appleIIeHiResPageSize = 0x2000
 	appleIIeCharROMSize   = 256 * 8
+	appleIIeCharROMSizeEx = 512 * 8
 
 	appleIIeSwitch80ColOff uint16 = 0xC00C
 	appleIIeSwitch80ColOn  uint16 = 0xC00D
@@ -91,6 +92,7 @@ type AppleIIeCRTC struct {
 	renderMode   appleIIeRenderMode
 	memory       AppleIIeMemory
 	characterROM []byte
+	charROMKind  appleIIeCharacterROMKind
 
 	videoMainMem []byte
 	videoAuxMem  []byte
@@ -109,6 +111,22 @@ type AppleIIeCRTC struct {
 	RasterCount int
 	CCLK        byte
 	VBL         byte
+}
+
+type appleIIeCharacterROMKind uint8
+
+const (
+	appleIIeCharacterROMClassic appleIIeCharacterROMKind = iota
+	appleIIeCharacterROMEnhanced
+)
+
+func DescribeAppleIIeCharacterROM(charROM []byte) string {
+	switch detectAppleIIeCharacterROMKind(charROM) {
+	case appleIIeCharacterROMEnhanced:
+		return "Apple IIe enhanced chargen (4 KB)"
+	default:
+		return "Apple II compatible chargen (2 KB)"
+	}
 }
 
 func DefaultAppleIIeConfig() Config {
@@ -200,6 +218,7 @@ func newAppleIIeCRTC(name string, cfg Config, options AppleIIeOptions, renderer 
 		},
 		memory:       normalizedAppleIIeMemory(options.Memory),
 		characterROM: normalizedCharacterROM(options.CharacterROM),
+		charROMKind:  detectAppleIIeCharacterROMKind(options.CharacterROM),
 		textColor:    appleIIeMonochromeColor,
 		pixelSize:    1,
 	}
@@ -739,18 +758,19 @@ func (c *AppleIIeCRTC) drawCharacter(x, y, width, height int, value byte) {
 		scaleY = 1
 	}
 
-	glyphIndex := int(value & 0x7F)
 	inverse := value < 0x40
 	flashing := value >= 0x40 && value < 0x80
 	if flashing && c.blinkOn {
 		inverse = !inverse
 	}
 
+	glyphIndex := c.glyphIndexForTextValue(value, inverse)
+
 	for row := 0; row < glyphHeight; row++ {
 		glyphRow := c.characterROM[glyphIndex*glyphHeight+row]
 		for col := 0; col < glyphWidth; col++ {
-			bitOn := glyphRow&(1<<(glyphWidth-col-1)) != 0
-			if inverse {
+			bitOn := c.glyphRowBitOn(glyphRow, col)
+			if inverse && c.charROMKind == appleIIeCharacterROMClassic {
 				bitOn = !bitOn
 			}
 			color := appleIIeBlackColor
@@ -760,6 +780,35 @@ func (c *AppleIIeCRTC) drawCharacter(x, y, width, height int, value byte) {
 			c.fillRect(x+col*scaleX, y+row*scaleY, scaleX, scaleY, color)
 		}
 	}
+}
+
+func (c *AppleIIeCRTC) glyphRowBitOn(glyphRow byte, col int) bool {
+	if c.charROMKind == appleIIeCharacterROMEnhanced {
+		return glyphRow&(1<<col) != 0
+	}
+	return glyphRow&(1<<(7-col-1)) != 0
+}
+
+func (c *AppleIIeCRTC) glyphIndexForTextValue(value byte, inverse bool) int {
+	if c.charROMKind == appleIIeCharacterROMEnhanced {
+		return appleIIeEnhancedGlyphIndex(value, inverse)
+	}
+	return int(value & 0x7F)
+}
+
+func appleIIeEnhancedGlyphIndex(value byte, inverse bool) int {
+	code := int(value & 0x7F)
+	if inverse {
+		if code >= 0x40 && code < 0x60 {
+			return code
+		}
+		return code + 0x80
+	}
+
+	if code >= 0x40 && code < 0x60 {
+		return code - 0x40
+	}
+	return code
 }
 
 func (c *AppleIIeCRTC) fillRect(x, y, width, height int, color uint32) {
@@ -804,6 +853,13 @@ func normalizedCharacterROM(charROM []byte) []byte {
 	normalized := make([]byte, appleIIeCharROMSize)
 	copy(normalized, charROM)
 	return normalized
+}
+
+func detectAppleIIeCharacterROMKind(charROM []byte) appleIIeCharacterROMKind {
+	if len(charROM) >= appleIIeCharROMSizeEx {
+		return appleIIeCharacterROMEnhanced
+	}
+	return appleIIeCharacterROMClassic
 }
 
 func appleIIeTextBaseAddress(page2 bool) uint16 {
