@@ -248,6 +248,59 @@ func TestAppleIIeMMUSlot3DefaultsToInternalROMAndCanBeEnabled(t *testing.T) {
 	}
 }
 
+func TestAppleIIeMMUSlot3BaseROMMirrorsIntoC800For80ColumnFirmware(t *testing.T) {
+	mmu, err := NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+
+	slot3ROM := make([]byte, 0x0100)
+	slot3ROM[0x00] = 0xAA
+	slot3ROM[0x16] = 0xB6
+	slot3ROM[0x22] = 0xC2
+	slot3ROM[0x40] = 0xD0
+	slot3ROM[0xCA] = 0xE9
+	if err := mmu.LoadSlotROM(3, slot3ROM); err != nil {
+		t.Fatalf("load slot3 ROM: %v", err)
+	}
+	if err := mmu.Write(appleIIeMMUSwitchSlotC3ROMOn, 0); err != nil {
+		t.Fatalf("enable SLOTC3ROM: %v", err)
+	}
+
+	if got, err := mmu.Read(0xC300); err != nil || got != 0xAA {
+		t.Fatalf("expected slot3 base byte at C300, got 0x%02X err=%v", got, err)
+	}
+	if got, err := mmu.Read(0xCB16); err != nil || got != 0xB6 {
+		t.Fatalf("expected slot3 base ROM to mirror at CB16, got 0x%02X err=%v", got, err)
+	}
+	if got, err := mmu.Read(0xCB22); err != nil || got != 0xC2 {
+		t.Fatalf("expected slot3 base ROM to mirror at CB22, got 0x%02X err=%v", got, err)
+	}
+	if got, err := mmu.Read(0xC840); err != nil || got != 0xD0 {
+		t.Fatalf("expected slot3 base ROM to mirror at C840, got 0x%02X err=%v", got, err)
+	}
+	if got, err := mmu.Read(0xC9CA); err != nil || got != 0xE9 {
+		t.Fatalf("expected slot3 base ROM to mirror at C9CA, got 0x%02X err=%v", got, err)
+	}
+}
+
+func TestAppleIIeMMUOtherBaseSlotROMDoesNotMirrorIntoC800(t *testing.T) {
+	mmu, err := NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+
+	if err := mmu.LoadSlotROM(6, []byte{0x55}); err != nil {
+		t.Fatalf("load slot6 ROM: %v", err)
+	}
+	if got, err := mmu.Read(0xC600); err != nil || got != 0x55 {
+		t.Fatalf("expected slot6 base ROM byte at C600, got 0x%02X err=%v", got, err)
+	}
+	if got, err := mmu.Read(0xC800); err != nil || got != 0x00 {
+		t.Fatalf("expected slot6 256-byte ROM not to mirror into C800, got 0x%02X err=%v", got, err)
+	}
+}
+
 func TestAppleIIeMMUInternalC3AccessClearsActiveC8SlotROM(t *testing.T) {
 	mmu, err := NewAppleIIeMMU("mmu")
 	if err != nil {

@@ -18,8 +18,8 @@ const (
 	appleIIeSoftSwitchWriteIntCxROMOn    uint16 = 0xC007
 	appleIIeSoftSwitchWriteAltZPOff      uint16 = 0xC008
 	appleIIeSoftSwitchWriteAltZPOn       uint16 = 0xC009
-	appleIIeSoftSwitchWriteSlotC3ROMOff  uint16 = 0xC00A
-	appleIIeSoftSwitchWriteSlotC3ROMOn   uint16 = 0xC00B
+	appleIIeSoftSwitchWriteSlotC3ROMOn   uint16 = 0xC00A
+	appleIIeSoftSwitchWriteSlotC3ROMOff  uint16 = 0xC00B
 	appleIIeSoftSwitchWrite80ColOff      uint16 = 0xC00C
 	appleIIeSoftSwitchWrite80ColOn       uint16 = 0xC00D
 	appleIIeSoftSwitchWriteAltCharsetOff uint16 = 0xC00E
@@ -66,6 +66,23 @@ func (s *AppleIIeSoftSwitches) Read(addr uint16) (byte, error) {
 		if s.keyboard != nil {
 			return s.keyboard.Read(addr)
 		}
+	case appleIIeSoftSwitchWrite80ColOff,
+		appleIIeSoftSwitchWrite80ColOn,
+		appleIIeSoftSwitchGraphics,
+		appleIIeSoftSwitchText,
+		appleIIeSoftSwitchFull,
+		appleIIeSoftSwitchMixed,
+		appleIIeSoftSwitchPage1,
+		appleIIeSoftSwitchPage2,
+		appleIIeSoftSwitchLoRes,
+		appleIIeSoftSwitchHiRes:
+		if err := s.Write(addr, 0); err != nil {
+			return 0, err
+		}
+		if s.video != nil {
+			return s.video.Read(addr)
+		}
+		return 0x00, nil
 	case appleIIeSoftSwitchReadRAMRead,
 		appleIIeSoftSwitchReadRAMWrite,
 		appleIIeSoftSwitchReadIntCxROM,
@@ -81,17 +98,7 @@ func (s *AppleIIeSoftSwitches) Read(addr uint16) (byte, error) {
 		appleIIeSoftSwitchReadPage2,
 		appleIIeSoftSwitchReadHiRes,
 		appleIIeSoftSwitchReadAltCharset,
-		appleIIeSoftSwitchRead80Col,
-		appleIIeSoftSwitchWrite80ColOff,
-		appleIIeSoftSwitchWrite80ColOn,
-		appleIIeSoftSwitchGraphics,
-		appleIIeSoftSwitchText,
-		appleIIeSoftSwitchFull,
-		appleIIeSoftSwitchMixed,
-		appleIIeSoftSwitchPage1,
-		appleIIeSoftSwitchPage2,
-		appleIIeSoftSwitchLoRes,
-		appleIIeSoftSwitchHiRes:
+		appleIIeSoftSwitchRead80Col:
 		if s.video != nil {
 			return s.video.Read(addr)
 		}

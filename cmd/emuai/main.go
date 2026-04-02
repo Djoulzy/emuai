@@ -30,6 +30,9 @@ const (
 	motherboardFrequencyHz    = 1_000_000
 	pausePollInterval         = 25 * time.Millisecond
 	pauseDumpInstructionCount = 16
+	dump80ColSettleCycles     = 100_000
+	dump80ColWatchInterval    = 10_000
+	dump80ColWatchLimit       = 8
 	startupScreenColumns      = 40
 	startupScreenRows         = 24
 	appleIIeCharacterROMName  = "3410036.bin"
@@ -55,8 +58,30 @@ type runControl struct {
 	paused atomic.Bool
 }
 
+type runtimeDiagnostics struct {
+	dump80Col       bool
+	watch80Col      bool
+	dumped80Col     bool
+	armed80Col      bool
+	activeSince     uint64
+	lastWatchCycle  uint64
+	visibleDumped   int
+	lastVisibleDump string
+	video           *video.AppleIIeCRTC
+	textMemory      appleIIeTextBankReader
+}
+
 type memoryLoader interface {
 	Load(addr uint16, data []byte) error
+}
+
+type auxMemoryLoader interface {
+	LoadAux(addr uint16, data []byte) error
+}
+
+type appleIIeTextBankReader interface {
+	ReadMain(addr uint16) (byte, error)
+	ReadAux(addr uint16) (byte, error)
 }
 
 type memoryFileLoader interface {
@@ -138,6 +163,8 @@ func main() {
 	videoWidth := flag.Int("video-width", 560, "video framebuffer width in pixels")
 	videoHeight := flag.Int("video-height", 384, "video framebuffer height in pixels")
 	videoRefreshHz := flag.Int("video-refresh-hz", 60, "video refresh rate in Hz")
+	dump80Col := flag.Bool("dump-80col", false, "dump Apple IIe 80-column main/aux text rows when 80-column mode becomes active")
+	dump80ColWatch := flag.Bool("dump-80col-watch", false, "dump visible Apple IIe 80-column text cells when they change after 80-column mode becomes active")
 	flag.Var(stopPC, "stop-pc", "stop execution before the instruction at this program counter executes")
 	flag.Parse()
 
@@ -200,6 +227,7 @@ func main() {
 	}, video.AppleIIeOptions{
 		CharacterROM: characterROM,
 		BankedMemory: mmu,
+		ColorDisplay: true,
 	})
 	if err != nil {
 		log.Fatalf("create video: %v", err)
@@ -250,6 +278,7 @@ func main() {
 	}
 
 	writeStartupTextToRAM(mmu, startupScreenLines(*videoBackend, *romConfigPath, characterROMPath))
+	initializeAuxTextPages(mmu)
 
 	if *romConfigPath != "" {
 		loadedROMs, err := loadROMsFromConfig(mmu, *romConfigPath)
@@ -265,7 +294,14 @@ func main() {
 		log.Fatalf("reset CPU after loading boot sources: %v", err)
 	}
 
-	if err := runMachine(ctx, board, processor, *realtime, *maxCycles, control, stopPC); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+	diagnostics := &runtimeDiagnostics{
+		dump80Col:  *dump80Col,
+		watch80Col: *dump80ColWatch,
+		video:      videoDevice,
+		textMemory: mmu,
+	}
+
+	if err := runMachine(ctx, board, processor, *realtime, *maxCycles, control, stopPC, diagnostics); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		log.Fatalf("run board: %v", err)
 	}
 
@@ -497,6 +533,24 @@ func writeStartupTextToRAM(memoryDevice memoryLoader, lines []string) {
 	}
 }
 
+func initializeAuxTextPages(memoryDevice auxMemoryLoader) {
+	if memoryDevice == nil {
+		return
+	}
+
+	page := make([]byte, appleIIeTextPageSize)
+	for idx := range page {
+		page[idx] = 0x20
+	}
+
+	if err := memoryDevice.LoadAux(appleIIeTextPage1Address, page); err != nil {
+		log.Printf("aux text page 1 load warning: %v", err)
+	}
+	if err := memoryDevice.LoadAux(appleIIeTextPage1Address+appleIIeTextPageSize, page); err != nil {
+		log.Printf("aux text page 2 load warning: %v", err)
+	}
+}
+
 func writeResetVector(memoryDevice memoryLoader, addr uint16) error {
 	if memoryDevice == nil {
 		return fmt.Errorf("memory device is nil")
@@ -534,7 +588,7 @@ func encodeAppleIIeTextByte(value byte) byte {
 	return value | 0x80
 }
 
-func runMachine(ctx context.Context, board *emulator.Motherboard, processor *cpu.CPU6502, realtime bool, maxCycles uint64, control *runControl, stopPC *uint16Flag) error {
+func runMachine(ctx context.Context, board *emulator.Motherboard, processor *cpu.CPU6502, realtime bool, maxCycles uint64, control *runControl, stopPC *uint16Flag, diagnostics *runtimeDiagnostics) error {
 	var ticker *time.Ticker
 	if realtime {
 		ticker = time.NewTicker(time.Second / time.Duration(motherboardFrequencyHz))
@@ -574,7 +628,225 @@ func runMachine(ctx context.Context, board *emulator.Motherboard, processor *cpu
 		if err := board.Step(ctx); err != nil {
 			return err
 		}
+
+		maybeDump80ColumnState(diagnostics, board.Cycle())
 	}
+}
+
+func maybeDump80ColumnState(diagnostics *runtimeDiagnostics, cycle uint64) {
+	if diagnostics == nil || (!diagnostics.dump80Col && !diagnostics.watch80Col) {
+		return
+	}
+	if diagnostics.video == nil || diagnostics.textMemory == nil {
+		return
+	}
+
+	mode := diagnostics.video.Mode()
+	if !mode.Columns80 || !mode.Text {
+		diagnostics.armed80Col = false
+		diagnostics.activeSince = 0
+		diagnostics.lastWatchCycle = 0
+		diagnostics.visibleDumped = 0
+		diagnostics.lastVisibleDump = ""
+		return
+	}
+
+	if !diagnostics.armed80Col {
+		diagnostics.armed80Col = true
+		diagnostics.activeSince = cycle
+		diagnostics.lastWatchCycle = cycle
+		return
+	}
+
+	if cycle-diagnostics.activeSince < dump80ColSettleCycles {
+		return
+	}
+
+	if diagnostics.dump80Col && !diagnostics.dumped80Col {
+		log.Print(format80ColumnDump(diagnostics.video, diagnostics.textMemory))
+		diagnostics.dumped80Col = true
+	}
+
+	if !diagnostics.watch80Col || diagnostics.visibleDumped >= dump80ColWatchLimit {
+		return
+	}
+	if cycle-diagnostics.lastWatchCycle < dump80ColWatchInterval {
+		return
+	}
+	diagnostics.lastWatchCycle = cycle
+
+	visibleDump := format80ColumnVisibleDump(diagnostics.video, diagnostics.textMemory)
+	if visibleDump == diagnostics.lastVisibleDump {
+		return
+	}
+
+	log.Print(visibleDump)
+	diagnostics.lastVisibleDump = visibleDump
+	diagnostics.visibleDumped++
+}
+
+func format80ColumnDump(videoDevice *video.AppleIIeCRTC, memoryDevice appleIIeTextBankReader) string {
+	if videoDevice == nil || memoryDevice == nil {
+		return "80COL dump unavailable"
+	}
+
+	mode := videoDevice.Mode()
+	page := effectiveDisplayPage(mode)
+	base := uint16(appleIIeTextPage1Address)
+	if page == 1 {
+		base += uint16(appleIIeTextPageSize)
+	}
+
+	rows := []int{0, 1, 2, 3, 20, 21, 22, 23}
+	var b strings.Builder
+	b.WriteString("80COL dump\n")
+	b.WriteString("mode: ")
+	b.WriteString(videoDevice.ModeString())
+	b.WriteString("\n")
+	if mode.Store80 && mode.Page2 {
+		b.WriteString("display-page: 1 (80STORE overrides PAGE2 for display access)\n")
+	} else {
+		fmt.Fprintf(&b, "display-page: %d\n", page+1)
+	}
+
+	for _, row := range rows {
+		mainValues := make([]byte, 40)
+		auxValues := make([]byte, 40)
+		displayValues := make([]byte, 80)
+
+		for col := 0; col < 40; col++ {
+			addr := base + uint16(startupTextOffset(row, col))
+			mainValues[col] = readTextBankByte(memoryDevice.ReadMain, addr)
+			auxValues[col] = readTextBankByte(memoryDevice.ReadAux, addr)
+			displayValues[col*2] = auxValues[col]
+			displayValues[col*2+1] = mainValues[col]
+		}
+
+		fmt.Fprintf(&b, "row %02d main: %s\n", row, formatByteSlice(mainValues))
+		fmt.Fprintf(&b, "row %02d aux : %s\n", row, formatByteSlice(auxValues))
+		fmt.Fprintf(&b, "row %02d disp: %s\n", row, formatByteSlice(displayValues))
+	}
+
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func format80ColumnVisibleDump(videoDevice *video.AppleIIeCRTC, memoryDevice appleIIeTextBankReader) string {
+	if videoDevice == nil || memoryDevice == nil {
+		return "80COL visible dump unavailable"
+	}
+
+	mode := videoDevice.Mode()
+	page := effectiveDisplayPage(mode)
+	base := uint16(appleIIeTextPage1Address)
+	if page == 1 {
+		base += uint16(appleIIeTextPageSize)
+	}
+
+	type rowState struct {
+		main []byte
+		aux  []byte
+		disp []byte
+	}
+
+	visibleCells := make([]string, 0, startupScreenRows)
+	visibleRows := make([]int, 0, startupScreenRows)
+	rows := make(map[int]rowState, startupScreenRows)
+
+	for row := 0; row < startupScreenRows; row++ {
+		mainValues := make([]byte, startupScreenColumns)
+		auxValues := make([]byte, startupScreenColumns)
+		displayValues := make([]byte, startupScreenColumns*2)
+		rowVisible := false
+
+		for col := 0; col < startupScreenColumns; col++ {
+			addr := base + uint16(startupTextOffset(row, col))
+			mainValues[col] = readTextBankByte(memoryDevice.ReadMain, addr)
+			auxValues[col] = readTextBankByte(memoryDevice.ReadAux, addr)
+			displayValues[col*2] = auxValues[col]
+			displayValues[col*2+1] = mainValues[col]
+			if !isAppleIIe80ColumnBlank(mainValues[col], auxValues[col]) {
+				rowVisible = true
+				visibleCells = append(visibleCells, fmt.Sprintf("r=%d c=%d main=%02X aux=%02X", row, col, mainValues[col], auxValues[col]))
+			}
+		}
+
+		if rowVisible {
+			visibleRows = append(visibleRows, row)
+			rows[row] = rowState{main: mainValues, aux: auxValues, disp: displayValues}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("80COL visible dump\n")
+	b.WriteString("mode: ")
+	b.WriteString(videoDevice.ModeString())
+	b.WriteString("\n")
+	if mode.Store80 && mode.Page2 {
+		b.WriteString("display-page: 1 (80STORE overrides PAGE2 for display access)\n")
+	} else {
+		fmt.Fprintf(&b, "display-page: %d\n", page+1)
+	}
+	if len(visibleCells) == 0 {
+		b.WriteString("visible: (all blank)")
+		return b.String()
+	}
+	b.WriteString("visible: ")
+	b.WriteString(strings.Join(visibleCells, "; "))
+	b.WriteByte('\n')
+
+	for idx, row := range visibleRows {
+		state := rows[row]
+		fmt.Fprintf(&b, "row %02d main: %s\n", row, formatByteSlice(state.main))
+		fmt.Fprintf(&b, "row %02d aux : %s\n", row, formatByteSlice(state.aux))
+		fmt.Fprintf(&b, "row %02d disp: %s", row, formatByteSlice(state.disp))
+		if idx < len(visibleRows)-1 {
+			b.WriteByte('\n')
+		}
+	}
+
+	return b.String()
+}
+
+func isAppleIIe80ColumnBlank(mainValue, auxValue byte) bool {
+	mainBlank := mainValue == 0xA0 || mainValue == 0x00
+	auxBlank := auxValue == 0x20 || auxValue == 0x00
+	return mainBlank && auxBlank
+}
+
+func effectiveDisplayPage(mode video.AppleIIeDisplayMode) int {
+	if mode.Store80 {
+		return 0
+	}
+	if mode.Page2 {
+		return 1
+	}
+	return 0
+}
+
+func readTextBankByte(read func(uint16) (byte, error), addr uint16) byte {
+	if read == nil {
+		return 0xFF
+	}
+	value, err := read(addr)
+	if err != nil {
+		return 0xFF
+	}
+	return value
+}
+
+func formatByteSlice(values []byte) string {
+	if len(values) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	for idx, value := range values {
+		if idx > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "%02X", value)
+	}
+	return b.String()
 }
 
 func waitWhilePaused(ctx context.Context, control *runControl) error {

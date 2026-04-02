@@ -19,8 +19,8 @@ const (
 	appleIIeMMUSwitchIntCxROMOn    uint16 = 0xC007
 	appleIIeMMUSwitchAltZPOff      uint16 = 0xC008
 	appleIIeMMUSwitchAltZPOn       uint16 = 0xC009
-	appleIIeMMUSwitchSlotC3ROMOff  uint16 = 0xC00A
-	appleIIeMMUSwitchSlotC3ROMOn   uint16 = 0xC00B
+	appleIIeMMUSwitchSlotC3ROMOn   uint16 = 0xC00A
+	appleIIeMMUSwitchSlotC3ROMOff  uint16 = 0xC00B
 	appleIIeMMUSwitchReadRAMRead   uint16 = 0xC013
 	appleIIeMMUSwitchReadRAMWrt    uint16 = 0xC014
 	appleIIeMMUSwitchReadIntCxROM  uint16 = 0xC015
@@ -377,6 +377,13 @@ func (m *AppleIIeMMU) readSlotROM(addr uint16) (byte, bool) {
 	if addr >= 0xC800 && addr <= 0xCFFF && m.activeSlot >= 1 && m.activeSlot <= 7 {
 		rom := m.slotROMs[m.activeSlot]
 		if len(rom) <= 0x0100 {
+			if m.activeSlot == 3 {
+				offset := int(addr & 0x00FF)
+				if offset >= len(rom) {
+					return 0, false
+				}
+				return rom[offset], true
+			}
 			return 0, false
 		}
 

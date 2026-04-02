@@ -552,10 +552,7 @@ func (c *AppleIIeCRTC) disableDoubleWidth() {
 }
 
 func (c *AppleIIeCRTC) updateDisplayMode() {
-	page := 0
-	if c.mode.Page2 {
-		page = 1
-	}
+	page := c.displayPage()
 
 	if c.mode.Text {
 		c.videoMainMem = c.memory.MainText[page]
@@ -634,22 +631,47 @@ func (c *AppleIIeCRTC) redrawFrame() {
 }
 
 func (c *AppleIIeCRTC) renderText(columns80 bool) {
-	cellWidth := c.cfg.CRT.Width / 40
 	if columns80 {
-		cellWidth = c.cfg.CRT.Width / 80
+		c.renderText80()
+		return
 	}
+
+	cellWidth := c.cfg.CRT.Width / 40
 	cellHeight := c.cfg.CRT.Height / 24
 	for row := 0; row < 24; row++ {
 		if !c.mode.Text && c.mode.Mixed && row < 20 {
 			continue
 		}
-		columns := 40
-		if columns80 {
-			columns = 80
-		}
-		for col := 0; col < columns; col++ {
-			value := c.textByte(row, col, columns80)
+		for col := 0; col < 40; col++ {
+			value := c.textByte(row, col, false)
 			c.drawCharacter(col*cellWidth, row*cellHeight, cellWidth, cellHeight, value)
+		}
+	}
+}
+
+func (c *AppleIIeCRTC) renderText80() {
+	const sourceWidth = 40 * 14
+
+	for row := 0; row < 24; row++ {
+		if !c.mode.Text && c.mode.Mixed && row < 20 {
+			continue
+		}
+
+		yStart, yEnd := scaleSpan(row, row+1, 24, c.cfg.CRT.Height)
+		if yEnd <= yStart {
+			continue
+		}
+
+		for pair := 0; pair < 40; pair++ {
+			auxXStart, auxXEnd := scaleSpan(pair*14, pair*14+7, sourceWidth, c.cfg.CRT.Width)
+			mainXStart, mainXEnd := scaleSpan(pair*14+7, pair*14+14, sourceWidth, c.cfg.CRT.Width)
+
+			if auxXEnd > auxXStart {
+				c.drawCharacter(auxXStart, yStart, auxXEnd-auxXStart, yEnd-yStart, c.textByte(row, pair*2, true))
+			}
+			if mainXEnd > mainXStart {
+				c.drawCharacter(mainXStart, yStart, mainXEnd-mainXStart, yEnd-yStart, c.textByte(row, pair*2+1, true))
+			}
 		}
 	}
 }
@@ -797,22 +819,33 @@ func (c *AppleIIeCRTC) activeVideoAddress(offset int, aux bool) (uint16, bool) {
 	}
 
 	var base uint16
+	page2 := c.displayPage() == 1
 	switch c.renderMode {
 	case appleIIeRenderText40, appleIIeRenderText80, appleIIeRenderLoRes, appleIIeRenderLoRes80:
 		if offset >= appleIIeTextPageSize {
 			return 0, false
 		}
-		base = appleIIeTextBaseAddress(c.mode.Page2)
+		base = appleIIeTextBaseAddress(page2)
 	case appleIIeRenderHiRes, appleIIeRenderDoubleHiRes:
 		if offset >= appleIIeHiResPageSize {
 			return 0, false
 		}
-		base = appleIIeHiResBaseAddress(c.mode.Page2)
+		base = appleIIeHiResBaseAddress(page2)
 	default:
 		return 0, false
 	}
 
 	return base + uint16(offset), true
+}
+
+func (c *AppleIIeCRTC) displayPage() int {
+	if c.mode.Store80 {
+		return 0
+	}
+	if c.mode.Page2 {
+		return 1
+	}
+	return 0
 }
 
 func (c *AppleIIeCRTC) drawCharacter(x, y, width, height int, value byte) {
@@ -822,13 +855,16 @@ func (c *AppleIIeCRTC) drawCharacter(x, y, width, height int, value byte) {
 		return
 	}
 
-	inverse := value < 0x40
-	flashing := value >= 0x40 && value < 0x80
-	if flashing && c.blinkOn {
-		inverse = !inverse
+	inverse := false
+	if c.charROMKind == appleIIeCharacterROMClassic {
+		inverse = value < 0x40
+		flashing := value >= 0x40 && value < 0x80
+		if flashing && c.blinkOn {
+			inverse = !inverse
+		}
 	}
 
-	glyphIndex := c.glyphIndexForTextValue(value, inverse)
+	glyphIndex := c.glyphIndexForTextValue(value)
 
 	if width >= glyphWidth && height >= glyphHeight {
 		scaleX := width / glyphWidth
@@ -887,32 +923,31 @@ func (c *AppleIIeCRTC) glyphRowBitOn(glyphRow byte, col int) bool {
 	return glyphRow&(1<<(7-col-1)) != 0
 }
 
-func (c *AppleIIeCRTC) glyphIndexForTextValue(value byte, inverse bool) int {
+func (c *AppleIIeCRTC) glyphIndexForTextValue(value byte) int {
 	if c.charROMKind == appleIIeCharacterROMEnhanced {
-		glyphIndex := appleIIeEnhancedGlyphIndex(value, inverse)
-		if c.mode.AltCharset {
-			alternateIndex := glyphIndex + 0x100
-			if alternateIndex*8 < len(c.characterROM) {
-				return alternateIndex
-			}
-		}
-		return glyphIndex
+		return appleIIeEnhancedGlyphIndex(value, c.blinkOn)
 	}
 	return int(value & 0x7F)
 }
 
-func appleIIeEnhancedGlyphIndex(value byte, inverse bool) int {
-	code := int(value & 0x7F)
-	if inverse {
+func appleIIeEnhancedGlyphIndex(value byte, blinkOn bool) int {
+	raw := int(value)
+	code := raw & 0x7F
+
+	if raw >= 0x40 && raw < 0x80 {
 		if code >= 0x40 && code < 0x60 {
-			return code
+			if blinkOn {
+				return code
+			}
+			return code - 0x40
 		}
-		return code + 0x80
+		return code
 	}
 
-	if code >= 0x40 && code < 0x60 {
+	if raw >= 0x80 && code >= 0x40 && code < 0x60 {
 		return code - 0x40
 	}
+
 	return code
 }
 
@@ -930,6 +965,25 @@ func appleIIeTextOffset(row, col int) int {
 
 func appleIIeHiResOffset(row, col int) int {
 	return ((row & 0x07) << 10) + (((row >> 3) & 0x07) << 7) + ((row >> 6) * 0x28) + col
+}
+
+func scaleSpan(start, end, sourceSize, targetSize int) (int, int) {
+	if sourceSize <= 0 || targetSize <= 0 || end <= start {
+		return 0, 0
+	}
+
+	scaledStart := (start * targetSize) / sourceSize
+	scaledEnd := (end * targetSize) / sourceSize
+	if scaledEnd <= scaledStart {
+		scaledEnd = scaledStart + 1
+	}
+	if scaledStart < 0 {
+		scaledStart = 0
+	}
+	if scaledEnd > targetSize {
+		scaledEnd = targetSize
+	}
+	return scaledStart, scaledEnd
 }
 
 func normalizedAppleIIeMemory(memory AppleIIeMemory) AppleIIeMemory {

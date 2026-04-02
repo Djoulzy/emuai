@@ -80,8 +80,7 @@ func TestAppleIIeCRTCSwitchesUpdateMode(t *testing.T) {
 func TestAppleIIeCRTCSupports80StoreAndAltCharsetSoftSwitches(t *testing.T) {
 	charROM := make([]byte, appleIIeCharROMSizeEx)
 	for row := 0; row < 8; row++ {
-		charROM[(0x01*8)+row] = 0x01
-		charROM[(0x101*8)+row] = 0x20
+		charROM[(0x01*8)+row] = 0x7E
 	}
 
 	memory := AppleIIeMemory{}
@@ -110,11 +109,59 @@ func TestAppleIIeCRTCSupports80StoreAndAltCharsetSoftSwitches(t *testing.T) {
 
 	crtc.redrawFrame()
 	snapshot := crtc.Framebuffer().Snapshot(1)
-	if snapshot.Pixels[5] == appleIIeBlackColor {
-		t.Fatal("expected ALTCHARSET to use the alternate Apple IIe glyph bank")
+	litPixels := 0
+	for x := 0; x < 7; x++ {
+		if snapshot.Pixels[x] != appleIIeBlackColor {
+			litPixels++
+		}
+	}
+	if litPixels == 0 {
+		t.Fatal("expected ALTCHARSET state not to disturb enhanced Apple IIe base glyph rendering")
 	}
 	if got := crtc.ModeString(); got != "TEXT 80STORE ALTCHAR 40COL PAGE1" {
 		t.Fatalf("unexpected mode string %q", got)
+	}
+}
+
+func TestAppleIIeCRTCEnhancedAltCharsetKeeps80ColumnA0And20Blank(t *testing.T) {
+	charROM := make([]byte, appleIIeCharROMSizeEx)
+	for row := 0; row < 8; row++ {
+		charROM[(0x20*8)+row] = 0x00
+		charROM[(0x120*8)+row] = 0x7F
+	}
+
+	mmu, err := memory.NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+	if err := mmu.Load(appleIIeTextBaseAddress(false), []byte{0xA0}); err != nil {
+		t.Fatalf("load main text byte: %v", err)
+	}
+	if err := mmu.LoadAux(appleIIeTextBaseAddress(false), []byte{0x20}); err != nil {
+		t.Fatalf("load aux text byte: %v", err)
+	}
+
+	crtc, err := NewAppleIIeCRTC("crtc", Config{CRT: CRTConfig{Width: 560, Height: 192, RefreshHz: 60}}, AppleIIeOptions{
+		CharacterROM: charROM,
+		ColorDisplay: true,
+		BankedMemory: mmu,
+	})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	crtc.Set80Cols()
+	crtc.SetAltCharset(true)
+	crtc.redrawFrame()
+	snapshot := crtc.Framebuffer().Snapshot(1)
+	cellWidth := crtc.Config().CRT.Width / 80
+
+	if snapshot.Pixels[0] != appleIIeBlackColor {
+		t.Fatal("expected main-bank A0 space to stay blank with ALTCHAR on")
+	}
+	if snapshot.Pixels[cellWidth] != appleIIeBlackColor {
+		t.Fatal("expected aux-bank 0x20 space to stay blank with ALTCHAR on")
 	}
 }
 
@@ -227,6 +274,31 @@ func TestAppleIIeCRTCEnhancedCharacterROMUsesInverseBanks(t *testing.T) {
 
 	if snapshot.Pixels[0] == appleIIeBlackColor {
 		t.Fatal("expected flashing uppercase glyph to use enhanced inverse bank when flash is active")
+	}
+}
+
+func TestAppleIIeCRTCEnhancedCharacterROMLowASCIIBlankStaysBlank(t *testing.T) {
+	charROM := make([]byte, appleIIeCharROMSizeEx)
+	for row := 0; row < 8; row++ {
+		charROM[(0x20*8)+row] = 0x00
+		charROM[(0xA0*8)+row] = 0x7F
+	}
+
+	memory := AppleIIeMemory{}
+	memory.MainText[0] = make([]byte, appleIIeTextPageSize)
+	memory.MainText[0][appleIIeTextOffset(0, 0)] = 0x20
+
+	crtc, err := NewAppleIIeCRTC("crtc", Config{CRT: CRTConfig{Width: 280, Height: 192, RefreshHz: 60}}, AppleIIeOptions{CharacterROM: charROM, Memory: memory, ColorDisplay: true})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	crtc.redrawFrame()
+	snapshot := crtc.Framebuffer().Snapshot(1)
+
+	if snapshot.Pixels[0] != appleIIeBlackColor {
+		t.Fatal("expected enhanced low-ASCII space code 0x20 to remain blank")
 	}
 }
 
@@ -371,6 +443,54 @@ func TestAppleIIeCRTCReads80ColumnTextFromAuxBankedMemory(t *testing.T) {
 	}
 }
 
+func TestAppleIIeCRTC80StoreKeeps80ColumnDisplayOnPage1(t *testing.T) {
+	charROM := make([]byte, appleIIeCharROMSize)
+	for row := 0; row < 8; row++ {
+		charROM[(0x41*8)+row] = 0x7E
+	}
+
+	mmu, err := memory.NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+	if err := mmu.Load(appleIIeTextBaseAddress(false), []byte{0xA0}); err != nil {
+		t.Fatalf("load main page1 byte: %v", err)
+	}
+	if err := mmu.LoadAux(appleIIeTextBaseAddress(false), []byte{0xC1}); err != nil {
+		t.Fatalf("load aux page1 byte: %v", err)
+	}
+	if err := mmu.Load(appleIIeTextBaseAddress(true), []byte{0xC1}); err != nil {
+		t.Fatalf("load main page2 byte: %v", err)
+	}
+	if err := mmu.LoadAux(appleIIeTextBaseAddress(true), []byte{0xA0}); err != nil {
+		t.Fatalf("load aux page2 byte: %v", err)
+	}
+
+	crtc, err := NewAppleIIeCRTC("crtc", Config{CRT: CRTConfig{Width: 560, Height: 192, RefreshHz: 60}}, AppleIIeOptions{
+		CharacterROM: charROM,
+		ColorDisplay: true,
+		BankedMemory: mmu,
+	})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	crtc.Set80Cols()
+	crtc.Set80Store(true)
+	crtc.SetPage2()
+	crtc.redrawFrame()
+	snapshot := crtc.Framebuffer().Snapshot(1)
+	cellWidth := crtc.Config().CRT.Width / 80
+
+	if snapshot.Pixels[0] == appleIIeBlackColor {
+		t.Fatal("expected first 80-column cell to come from page1 auxiliary memory under 80STORE")
+	}
+	if snapshot.Pixels[cellWidth] != appleIIeBlackColor {
+		t.Fatal("expected second 80-column cell to stay blank from page1 main memory under 80STORE")
+	}
+}
+
 func TestAppleIIeCRTCPreserves40ColumnGlyphSpacingInWideCells(t *testing.T) {
 	charROM := make([]byte, appleIIeCharROMSize)
 	for row := 0; row < 8; row++ {
@@ -454,6 +574,53 @@ func TestAppleIIeCRTCCompresses80ColumnGlyphIntoNarrowCells(t *testing.T) {
 	}
 	if snapshot.Pixels[0] == appleIIeBlackColor {
 		t.Fatal("expected compressed 80-column glyph to remain visible")
+	}
+}
+
+func TestAppleIIeCRTCUsesFullFramebufferWidthFor80ColumnText(t *testing.T) {
+	charROM := make([]byte, appleIIeCharROMSize)
+	for row := 0; row < 8; row++ {
+		charROM[(0x41*8)+row] = 0x7F
+	}
+
+	mmu, err := memory.NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+
+	page := make([]byte, appleIIeTextPageSize)
+	for idx := range page {
+		page[idx] = 0xA0
+	}
+	auxPage := make([]byte, appleIIeTextPageSize)
+	for idx := range auxPage {
+		auxPage[idx] = 0xA0
+	}
+	page[39] = 0xC1
+	if err := mmu.Load(appleIIeTextBaseAddress(false), page); err != nil {
+		t.Fatalf("load main text page: %v", err)
+	}
+	if err := mmu.LoadAux(appleIIeTextBaseAddress(false), auxPage); err != nil {
+		t.Fatalf("load aux text page: %v", err)
+	}
+
+	crtc, err := NewAppleIIeCRTC("crtc", Config{CRT: CRTConfig{Width: 321, Height: 192, RefreshHz: 60}}, AppleIIeOptions{
+		CharacterROM: charROM,
+		ColorDisplay: true,
+		BankedMemory: mmu,
+	})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	crtc.Set80Cols()
+	crtc.redrawFrame()
+	snapshot := crtc.Framebuffer().Snapshot(1)
+
+	lastPixel := snapshot.Pixels[crtc.Config().CRT.Width-1]
+	if lastPixel == appleIIeBlackColor {
+		t.Fatal("expected the last 80-column glyph to reach the final framebuffer column")
 	}
 }
 
