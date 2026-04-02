@@ -14,6 +14,10 @@ const (
 	appleIIeCharROMSize   = 256 * 8
 	appleIIeCharROMSizeEx = 512 * 8
 
+	appleIIe80ColCursorPtrLowAddr  uint16 = 0x057B
+	appleIIe80ColCursorPtrHighAddr uint16 = 0x05FB
+	appleIIe80ColCursorColumnAddr  uint16 = 0x077B
+
 	appleIIeSwitch80StoreOff     uint16 = 0xC000
 	appleIIeSwitch80StoreOn      uint16 = 0xC001
 	appleIIeSwitch80ColOff       uint16 = 0xC00C
@@ -529,6 +533,8 @@ func (c *AppleIIeCRTC) initRegisters() {
 	c.Reg[appleIIeRegVerticalDisplayed] = 24
 	c.Reg[appleIIeRegVerticalSyncPosition] = 29
 	c.Reg[appleIIeRegMaxRasterAddress] = 8
+	c.Reg[appleIIeRegCursorStart] = 6
+	c.Reg[appleIIeRegCursorEnd] = 7
 	c.Reg[appleIIeRegStartAddressHigh] = 0
 	c.Reg[appleIIeRegStartAddressLow] = 0
 	c.pixelSize = 1
@@ -651,6 +657,7 @@ func (c *AppleIIeCRTC) renderText(columns80 bool) {
 
 func (c *AppleIIeCRTC) renderText80() {
 	const sourceWidth = 40 * 14
+	cursorRow, cursorCol, cursorVisible := c.active80ColumnCursor()
 
 	for row := 0; row < 24; row++ {
 		if !c.mode.Text && c.mode.Mixed && row < 20 {
@@ -671,6 +678,13 @@ func (c *AppleIIeCRTC) renderText80() {
 			}
 			if mainXEnd > mainXStart {
 				c.drawCharacter(mainXStart, yStart, mainXEnd-mainXStart, yEnd-yStart, c.textByte(row, pair*2+1, true))
+			}
+		}
+
+		if cursorVisible && row == cursorRow {
+			xStart, xEnd := c.cursorSpan80(cursorCol, sourceWidth)
+			if xEnd > xStart {
+				c.drawCursor(xStart, yStart, xEnd-xStart, yEnd-yStart)
 			}
 		}
 	}
@@ -916,6 +930,41 @@ func (c *AppleIIeCRTC) drawCharacter(x, y, width, height int, value byte) {
 	}
 }
 
+func (c *AppleIIeCRTC) drawCursor(x, y, width, height int) {
+	if width <= 0 || height <= 0 {
+		return
+	}
+
+	if c.Reg[appleIIeRegCursorStart]&0x20 != 0 {
+		return
+	}
+
+	start := int(c.Reg[appleIIeRegCursorStart] & 0x1F)
+	end := int(c.Reg[appleIIeRegCursorEnd] & 0x1F)
+	if start > 7 {
+		start = 7
+	}
+	if end > 7 {
+		end = 7
+	}
+	if end < start {
+		return
+	}
+
+	yStart, yEnd := scaleSpan(start, end+1, 8, height)
+	if yEnd <= yStart {
+		yEnd = yStart + 1
+		if yEnd > height {
+			yEnd = height
+		}
+	}
+	if yEnd <= yStart {
+		return
+	}
+
+	c.fillRect(x, y+yStart, width, yEnd-yStart, c.textColor)
+}
+
 func (c *AppleIIeCRTC) glyphRowBitOn(glyphRow byte, col int) bool {
 	if c.charROMKind == appleIIeCharacterROMEnhanced {
 		return glyphRow&(1<<col) != 0
@@ -959,8 +1008,66 @@ func (c *AppleIIeCRTC) fillRect(x, y, width, height int, color uint32) {
 	}
 }
 
+func (c *AppleIIeCRTC) active80ColumnCursor() (row, col int, ok bool) {
+	if !c.mode.Text || !c.mode.Columns80 || c.bankedMemory == nil {
+		return 0, 0, false
+	}
+
+	ptrLow, err := c.bankedMemory.ReadMain(appleIIe80ColCursorPtrLowAddr)
+	if err != nil {
+		return 0, 0, false
+	}
+	ptrHigh, err := c.bankedMemory.ReadMain(appleIIe80ColCursorPtrHighAddr)
+	if err != nil {
+		return 0, 0, false
+	}
+	cursorCol, err := c.bankedMemory.ReadMain(appleIIe80ColCursorColumnAddr)
+	if err != nil {
+		return 0, 0, false
+	}
+	if cursorCol >= 80 {
+		return 0, 0, false
+	}
+
+	base := appleIIeTextBaseAddress(c.displayPage() == 1)
+	addr := uint16(ptrHigh)<<8 | uint16(ptrLow)
+	if addr < base || addr >= base+appleIIeTextPageSize {
+		return 0, 0, false
+	}
+
+	row, _, ok = appleIIeTextRowCol(int(addr - base))
+	if !ok {
+		return 0, 0, false
+	}
+
+	return row, int(cursorCol), true
+}
+
+func (c *AppleIIeCRTC) cursorSpan80(col, sourceWidth int) (int, int) {
+	if col < 0 || col >= 80 {
+		return 0, 0
+	}
+
+	pair := col / 2
+	if col%2 == 0 {
+		return scaleSpan(pair*14, pair*14+7, sourceWidth, c.cfg.CRT.Width)
+	}
+	return scaleSpan(pair*14+7, pair*14+14, sourceWidth, c.cfg.CRT.Width)
+}
+
 func appleIIeTextOffset(row, col int) int {
 	return ((row & 0x07) << 7) + ((row >> 3) * 0x28) + col
+}
+
+func appleIIeTextRowCol(offset int) (row, col int, ok bool) {
+	for row = 0; row < 24; row++ {
+		for col = 0; col < 40; col++ {
+			if appleIIeTextOffset(row, col) == offset {
+				return row, col, true
+			}
+		}
+	}
+	return 0, 0, false
 }
 
 func appleIIeHiResOffset(row, col int) int {

@@ -968,6 +968,174 @@ func TestTypingAfterPR3UsesVisibleAuxTextMemory(t *testing.T) {
 	}
 }
 
+func TestPR3ShowsSolid80ColumnCursor(t *testing.T) {
+	romConfigPath, err := resolveRepositoryPath(filepath.Join("ROMs", "apple2e-roms.yaml"))
+	if err != nil {
+		t.Fatalf("resolve apple2e rom config: %v", err)
+	}
+
+	bus := emulator.NewBus()
+	mmu, err := memory.NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+	if err := bus.MapDevice(0x0000, 0xFFFF, "mmu", mmu); err != nil {
+		t.Fatalf("map MMU: %v", err)
+	}
+	if _, err := loadROMsFromConfig(mmu, romConfigPath); err != nil {
+		t.Fatalf("load ROM config: %v", err)
+	}
+
+	videoDevice, err := video.NewAppleIIeCRTC("video", video.Config{}, video.AppleIIeOptions{BankedMemory: mmu})
+	if err != nil {
+		t.Fatalf("new video device: %v", err)
+	}
+	t.Cleanup(func() { _ = videoDevice.Close() })
+
+	soundDevice := sound.NewNullSound("sound")
+	keyboardDevice := peripheral.NewKeyboard("keyboard")
+	if err := mapAppleIIeSoftSwitches(bus, mmu, videoDevice, soundDevice, keyboardDevice); err != nil {
+		t.Fatalf("mapAppleIIeSoftSwitches: %v", err)
+	}
+
+	processor := cpu.NewCPU6502("cpu")
+	processor.SetHaltOnBRK(false)
+	if err := resetForBoot(context.Background(), bus, mmu, videoDevice, soundDevice, keyboardDevice); err != nil {
+		t.Fatalf("reset for boot: %v", err)
+	}
+	initializeAuxTextPages(mmu)
+	if err := processor.Reset(context.Background(), bus); err != nil {
+		t.Fatalf("reset CPU: %v", err)
+	}
+
+	for cycle := uint64(0); cycle < 500000; cycle++ {
+		if err := processor.Tick(context.Background(), emulator.Tick{Cycle: cycle}, bus); err != nil {
+			t.Fatalf("boot tick %d: %v", cycle, err)
+		}
+	}
+
+	for _, char := range []rune{'P', 'R', '#', '3'} {
+		keyboardDevice.HandleKeyEvent(emulator.KeyEvent{Rune: char, Action: emulator.KeyActionPress})
+	}
+	keyboardDevice.HandleKeyEvent(emulator.KeyEvent{Code: emulator.KeyCodeEnter, Action: emulator.KeyActionPress})
+
+	currentCycle := uint64(500000)
+	for ; currentCycle < 6000000; currentCycle++ {
+		if err := processor.Tick(context.Background(), emulator.Tick{Cycle: currentCycle}, bus); err != nil {
+			if videoDevice.Mode().Columns80 {
+				break
+			}
+			t.Fatalf("tick %d: %v", currentCycle, err)
+		}
+	}
+
+	readyToType := false
+	visibleTextBase := uint16(appleIIeTextPage1Address)
+	promptRow := -1
+	promptCol80 := -1
+	for ; currentCycle < 12000000; currentCycle++ {
+		if effectiveDisplayPage(videoDevice.Mode()) == 1 {
+			visibleTextBase = uint16(appleIIeTextPage1Address + appleIIeTextPageSize)
+		} else {
+			visibleTextBase = uint16(appleIIeTextPage1Address)
+		}
+
+		promptRow = -1
+		promptCol80 = -1
+		for row := 0; row < startupScreenRows && promptRow < 0; row++ {
+			for col := 0; col < startupScreenColumns; col++ {
+				addr := visibleTextBase + uint16(startupTextOffset(row, col))
+				mainValue, err := mmu.ReadMain(addr)
+				if err != nil {
+					t.Fatalf("read main prompt row %d col %d: %v", row, col, err)
+				}
+				auxValue, err := mmu.ReadAux(addr)
+				if err != nil {
+					t.Fatalf("read aux prompt row %d col %d: %v", row, col, err)
+				}
+				switch {
+				case auxValue == 0x1D || auxValue == 0xDD:
+					promptRow = row
+					promptCol80 = col * 2
+				case mainValue == 0x1D || mainValue == 0xDD:
+					promptRow = row
+					promptCol80 = col*2 + 1
+				}
+				if promptRow >= 0 {
+					break
+				}
+			}
+		}
+
+		keyData, err := bus.Read(0xC000)
+		if err != nil {
+			t.Fatalf("read keyboard data before cursor check: %v", err)
+		}
+		if promptRow >= 0 && keyData&0x80 == 0 {
+			readyToType = true
+			break
+		}
+		if err := processor.Tick(context.Background(), emulator.Tick{Cycle: currentCycle}, bus); err != nil {
+			t.Fatalf("tick waiting for prompt %d: %v", currentCycle, err)
+		}
+	}
+	if !readyToType {
+		t.Fatalf("expected visible PR#3 prompt before cursor check, got:\n%s", format80ColumnVisibleDump(videoDevice, mmu))
+	}
+
+	expectedCursorCol := promptCol80 + 1
+	if expectedCursorCol >= 80 {
+		t.Fatalf("expected cursor column after prompt to stay on screen, got %d", expectedCursorCol)
+	}
+	addr := visibleTextBase + uint16(startupTextOffset(promptRow, expectedCursorCol/2))
+	mainValue, err := mmu.ReadMain(addr)
+	if err != nil {
+		t.Fatalf("read main cursor cell: %v", err)
+	}
+	auxValue, err := mmu.ReadAux(addr)
+	if err != nil {
+		t.Fatalf("read aux cursor cell: %v", err)
+	}
+	if expectedCursorCol%2 == 0 {
+		if auxValue != 0x20 && auxValue != 0xA0 && auxValue != 0x00 {
+			t.Fatalf("expected blank aux cell under 80-column cursor, got 0x%02X", auxValue)
+		}
+	} else {
+		if mainValue != 0x20 && mainValue != 0xA0 && mainValue != 0x00 {
+			t.Fatalf("expected blank main cell under 80-column cursor, got 0x%02X", mainValue)
+		}
+	}
+
+	frameStep := uint64(motherboardFrequencyHz / 60)
+	if err := videoDevice.Tick(context.Background(), emulator.Tick{Cycle: currentCycle + frameStep}, bus); err != nil {
+		t.Fatalf("tick video for cursor frame: %v", err)
+	}
+
+	width := videoDevice.Config().CRT.Width
+	cellWidth := width / 80
+	cellHeight := videoDevice.Config().CRT.Height / 24
+	x := expectedCursorCol*cellWidth + cellWidth/2
+	y := (promptRow+1)*cellHeight - 1
+	pixelIndex := y*width + x
+	snapshot := videoDevice.Framebuffer().Snapshot(1)
+	const blackPixel uint32 = 0xFF000000
+	if snapshot.Pixels[pixelIndex] == blackPixel {
+		t.Fatalf("expected visible 80-column cursor after PR#3 prompt, got dump:\n%s", format80ColumnVisibleDump(videoDevice, mmu))
+	}
+
+	frameCycle := currentCycle + frameStep
+	for frame := 0; frame < 16; frame++ {
+		frameCycle += frameStep
+		if err := videoDevice.Tick(context.Background(), emulator.Tick{Cycle: frameCycle}, bus); err != nil {
+			t.Fatalf("tick video frame %d: %v", frame, err)
+		}
+	}
+	snapshot = videoDevice.Framebuffer().Snapshot(2)
+	if snapshot.Pixels[pixelIndex] == blackPixel {
+		t.Fatalf("expected non-blinking 80-column cursor to remain visible, got dump:\n%s", format80ColumnVisibleDump(videoDevice, mmu))
+	}
+}
+
 func TestAppleIIeStartupInitializesAuxTextPageWithSpaces(t *testing.T) {
 	romConfigPath, err := resolveRepositoryPath(filepath.Join("ROMs", "apple2e-roms.yaml"))
 	if err != nil {

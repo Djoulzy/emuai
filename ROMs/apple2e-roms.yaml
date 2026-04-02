@@ -3,8 +3,8 @@ chargen:
 
 slots:
   # PR#3 active le firmware 80 colonnes via la ROM du slot 3.
-  slot3:
-    path: cards/80col.bin
+  # slot3:
+  #   path: cards/80col.bin
   # slot6:
   #   path: cards/16SectorP5.bin
 

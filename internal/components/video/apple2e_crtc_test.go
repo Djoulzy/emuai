@@ -443,6 +443,69 @@ func TestAppleIIeCRTCReads80ColumnTextFromAuxBankedMemory(t *testing.T) {
 	}
 }
 
+func TestAppleIIeCRTCDrawsSolid80ColumnCursorFromFirmwareState(t *testing.T) {
+	charROM := make([]byte, appleIIeCharROMSize)
+
+	mmu, err := memory.NewAppleIIeMMU("mmu")
+	if err != nil {
+		t.Fatalf("new Apple IIe MMU: %v", err)
+	}
+
+	mainPage := make([]byte, appleIIeTextPageSize)
+	auxPage := make([]byte, appleIIeTextPageSize)
+	for idx := range mainPage {
+		mainPage[idx] = 0xA0
+		auxPage[idx] = 0x20
+	}
+	if err := mmu.Load(appleIIeTextBaseAddress(false), mainPage); err != nil {
+		t.Fatalf("load main page: %v", err)
+	}
+	if err := mmu.LoadAux(appleIIeTextBaseAddress(false), auxPage); err != nil {
+		t.Fatalf("load aux page: %v", err)
+	}
+
+	cursorAddr := appleIIeTextBaseAddress(false) + uint16(appleIIeTextOffset(1, 0))
+	if err := mmu.Load(appleIIe80ColCursorPtrLowAddr, []byte{byte(cursorAddr)}); err != nil {
+		t.Fatalf("load cursor low byte: %v", err)
+	}
+	if err := mmu.Load(appleIIe80ColCursorPtrHighAddr, []byte{byte(cursorAddr >> 8)}); err != nil {
+		t.Fatalf("load cursor high byte: %v", err)
+	}
+	if err := mmu.Load(appleIIe80ColCursorColumnAddr, []byte{0x01}); err != nil {
+		t.Fatalf("load cursor column: %v", err)
+	}
+
+	crtc, err := NewAppleIIeCRTC("crtc", Config{CRT: CRTConfig{Width: 560, Height: 192, RefreshHz: 60}}, AppleIIeOptions{
+		CharacterROM: charROM,
+		ColorDisplay: true,
+		BankedMemory: mmu,
+	})
+	if err != nil {
+		t.Fatalf("new crtc: %v", err)
+	}
+	t.Cleanup(func() { _ = crtc.Close() })
+
+	crtc.Set80Cols()
+	crtc.redrawFrame()
+
+	width := crtc.Config().CRT.Width
+	cellWidth := width / 80
+	cellHeight := crtc.Config().CRT.Height / 24
+	cursorPixelIndex := (2*cellHeight-1)*width + cellWidth + cellWidth/2
+
+	snapshot := crtc.Framebuffer().Snapshot(1)
+	if snapshot.Pixels[cursorPixelIndex] == appleIIeBlackColor {
+		t.Fatal("expected firmware cursor to render on the second 80-column cell")
+	}
+
+	crtc.blinkOn = true
+	crtc.redrawFrame()
+	snapshot = crtc.Framebuffer().Snapshot(2)
+	if snapshot.Pixels[cursorPixelIndex] == appleIIeBlackColor {
+		t.Fatal("expected 80-column cursor to stay visible when blink state toggles")
+	}
+}
+
 func TestAppleIIeCRTC80StoreKeeps80ColumnDisplayOnPage1(t *testing.T) {
 	charROM := make([]byte, appleIIeCharROMSize)
 	for row := 0; row < 8; row++ {
